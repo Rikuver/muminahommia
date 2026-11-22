@@ -50,3 +50,7 @@ compile_commands.json
 .devcontainer/*
 __pycache__/
 CMakeSettings.json
+
+# Local only, not part of the repository
+/mumble-build-env/
+/mumble-scripts/

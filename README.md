@@ -1,3 +1,5 @@
+> **Customised Mumble.** To build it on Windows, see [BUILD_ON_WINDOWS.md](BUILD_ON_WINDOWS.md) (one script, works from a ZIP download).
+
 ![Mumble screenshot](screenshots/Mumble.png)
 
 # Mumble - Open Source voice-chat software
