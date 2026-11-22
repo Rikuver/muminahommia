@@ -865,8 +865,10 @@ void MainWindow::msgUserRemove(const MumbleProto::UserRemove &msg) {
 								  Q_ARG(unsigned int, pDst->uiSession));
 	}
 
-	if (pDst != pSelf)
+	if (pDst != pSelf) {
+		endPrivateChat(pDst->uiSession);
 		pmModel->removeUser(pDst);
+	}
 }
 
 /// This message is being received when the server informs the local client about channel properties (either during
@@ -1036,7 +1038,8 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 
 	Global::get().l->log(privateMessage ? Log::PrivateTextMessage : Log::TextMessage,
 						 tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())), tr("Message from %1").arg(plainName),
-						 false, overrideTTS, pSrc ? pSrc->bLocalIgnoreTTS : false);
+						 false, overrideTTS, pSrc ? pSrc->bLocalIgnoreTTS : false,
+						 (privateMessage && pSrc) ? pSrc->uiSession : 0);
 }
 
 /// This message is being received when the server informs the client about the access control list (ACL) for

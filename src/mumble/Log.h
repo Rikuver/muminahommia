@@ -154,8 +154,9 @@ public:
 public slots:
 	// We have to explicitly use Log::MsgType and not only MsgType in order to be able to use QMetaObject::invokeMethod
 	// with this function.
+	/// privateSession: if non-zero, the message goes into the private chat tab with that user instead of the main log
 	void log(Log::MsgType mt, const QString &console, const QString &terse = QString(), bool ownMessage = false,
-			 const QString &overrideTTS = QString(), bool ignoreTTS = false);
+			 const QString &overrideTTS = QString(), bool ignoreTTS = false, unsigned int privateSession = 0);
 	/// Logs LogMessages that have been deferred so far
 	void processDeferredLogs();
 };

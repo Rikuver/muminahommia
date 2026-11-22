@@ -314,7 +314,7 @@ void LogConfig::accept() const {
 #ifndef USE_NO_TTS
 	Global::get().l->tts->setVolume(s.iTTSVolume);
 #endif
-	Global::get().mw->qteLog->document()->setMaximumBlockCount(s.iMaxLogBlocks);
+	Global::get().mw->updateLogSettings();
 }
 
 void LogConfig::on_qtwMessages_itemChanged(QTreeWidgetItem *i, int column) {
@@ -713,13 +713,14 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 }
 
 void Log::log(MsgType mt, const QString &console, const QString &terse, bool ownMessage, const QString &overrideTTS,
-			  bool ignoreTTS) {
+			  bool ignoreTTS, unsigned int privateSession) {
 	if (QThread::currentThread() != thread()) {
 		// Invoke in main thread in order to keep the Qt gods on our side by not calling any UI
 		// functions from a separate thread (can lead to program crashes)
 		QMetaObject::invokeMethod(this, "log", Qt::QueuedConnection, Q_ARG(Log::MsgType, mt),
 								  Q_ARG(const QString &, console), Q_ARG(const QString &, terse),
-								  Q_ARG(bool, ownMessage), Q_ARG(const QString &, overrideTTS), Q_ARG(bool, ignoreTTS));
+								  Q_ARG(bool, ownMessage), Q_ARG(const QString &, overrideTTS), Q_ARG(bool, ignoreTTS),
+								  Q_ARG(unsigned int, privateSession));
 		return;
 	}
 
@@ -736,9 +737,16 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 	quint32 flags = Global::get().s.qmMessages.value(mt);
 
+	// Private messages go into their own chat tab (only created if the message is actually shown)
+	LogTextBrowser *tlog = nullptr;
+	if (Global::get().mw) {
+		tlog = (privateSession && (flags & Settings::LogConsole)) ? Global::get().mw->privateLog(privateSession)
+																  : Global::get().mw->qteLog;
+	}
+
 	// Message output on console
 	if ((flags & Settings::LogConsole)) {
-		QTextCursor tc = Global::get().mw->qteLog->textCursor();
+		QTextCursor tc = tlog->textCursor();
 
 		tc.movePosition(QTextCursor::End);
 
@@ -751,7 +759,6 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		qttf.setTopMargin(0);
 		qttf.setBottomMargin(msgMargin);
 
-		LogTextBrowser *tlog     = Global::get().mw->qteLog;
 		const int oldscrollvalue = tlog->getLogScroll();
 		// Restore the previous scroll position after inserting a new message
 		// if the message was not sent by the user AND the chat log is not
@@ -774,7 +781,8 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		// Set the line height of the leading blank line to zero
 		tc.setBlockFormat(bf);
 
-		if (qdDate != dt.date()) {
+		// Private tabs are short-lived, so only the main log gets date markers
+		if (tlog == Global::get().mw->qteLog && qdDate != dt.date()) {
 			qdDate = dt.date();
 			tc.insertFrame(qttf);
 			tc.insertHtml(
@@ -805,7 +813,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 		validHtml(console, &tc);
 		tc.movePosition(QTextCursor::End);
-		Global::get().mw->qteLog->setTextCursor(tc);
+		tlog->setTextCursor(tc);
 
 		// Set the line height of the trailing blank line to zero
 		tc.setBlockFormat(bf);
@@ -813,10 +821,13 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		if (restoreScroll) {
 			tlog->setLogScroll(oldscrollvalue);
 		}
+
+		Global::get().mw->markLogUnread(tlog);
 	}
 
 	if (!ownMessage) {
-		if (!(Global::get().mw->isActiveWindow() && Global::get().mw->qdwLog->isVisible())) {
+		if (!(Global::get().mw->isActiveWindow() && Global::get().mw->qdwLog->isVisible()
+			  && Global::get().mw->isLogVisible(tlog))) {
 			// Message notification with window highlight
 			if (flags & Settings::LogHighlight) {
 				QApplication::alert(Global::get().mw);

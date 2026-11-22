@@ -48,6 +48,7 @@ class ListenerVolumeSlider;
 class UserLocalVolumeSlider;
 
 struct ShortcutTarget;
+class QTabWidget;
 
 struct ContextMenuTarget {
 	ClientUser *user = nullptr;
@@ -152,12 +153,32 @@ public:
 	void openTextMessageDialog(ClientUser *p);
 	void openUserLocalNicknameDialog(const ClientUser &p);
 
+	// Chat tabs in the log dock: tab 0 is the main log (qteLog), every private conversation gets its own tab.
+	// Each private LogTextBrowser carries the properties "chatName", "session" (0 = user offline) and "unread".
+	QTabWidget *qtwLogTabs = nullptr;
+	QHash< unsigned int, LogTextBrowser * > qhPrivateLogs;
+	/// Returns the private chat tab for the user with the given session, creating it if needed.
+	/// Falls back to qteLog if there is no such user.
+	LogTextBrowser *privateLog(unsigned int session);
+	/// Whether the given log is the active tab
+	bool isLogVisible(const LogTextBrowser *log) const;
+	void markLogUnread(LogTextBrowser *log);
+	/// Re-applies max block count and stylesheet to all log tabs
+	void updateLogSettings();
+	/// Detaches the private chat tab from a session that is gone (user left or we disconnected)
+	void endPrivateChat(unsigned int session);
+
 #ifdef Q_OS_WIN
 	bool nativeEvent(const QByteArray &eventType, void *message, long *result) Q_DECL_OVERRIDE;
 	unsigned int uiNewHardware;
 #endif
 protected:
 	Usage uUsage;
+
+	void setupLogBrowser(LogTextBrowser *log);
+	void refreshLogTabText(LogTextBrowser *log);
+	/// The private chat tab that is currently shown, or nullptr if the main log is shown
+	LogTextBrowser *currentPrivateLog() const;
 	QTimer *qtReconnect;
 
 	QList< QAction * > qlServerActions;

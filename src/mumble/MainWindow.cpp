@@ -78,6 +78,7 @@
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollBar>
+#include <QtWidgets/QTabWidget>
 #include <QtWidgets/QToolTip>
 #include <QtWidgets/QWhatsThis>
 
@@ -443,11 +444,39 @@ void MainWindow::setupGui() {
 	qteLog->setFrameStyle(QFrame::NoFrame);
 #endif
 
-	LogDocument *ld = new LogDocument(qteLog);
-	qteLog->setDocument(ld);
+	setupLogBrowser(qteLog);
 
-	qteLog->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
-	qteLog->document()->setDefaultStyleSheet(qApp->styleSheet());
+	// Chat tabs: the tab bar only shows up once a private conversation exists
+	qtwLogTabs = new QTabWidget(qdwLog);
+	qtwLogTabs->setObjectName(QLatin1String("qtwLogTabs"));
+	qtwLogTabs->setDocumentMode(true);
+	qtwLogTabs->setTabBarAutoHide(true);
+	qtwLogTabs->setTabsClosable(true);
+	qteLog->setProperty("chatName", tr("Channel"));
+	qtwLogTabs->addTab(qteLog, tr("Channel"));
+	// The main log can't be closed
+	const auto closeSide = static_cast< QTabBar::ButtonPosition >(
+		qtwLogTabs->style()->styleHint(QStyle::SH_TabBar_CloseButtonPosition, nullptr, qtwLogTabs->tabBar()));
+	qtwLogTabs->tabBar()->setTabButton(0, closeSide, nullptr);
+	qdwLog->setWidget(qtwLogTabs);
+
+	connect(qtwLogTabs, &QTabWidget::currentChanged, this, [this](int index) {
+		if (auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->widget(index))) {
+			log->setProperty("unread", false);
+			refreshLogTabText(log);
+		}
+		updateChatBar();
+	});
+	connect(qtwLogTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
+		auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->widget(index));
+		if (!log || log == qteLog)
+			return;
+		const unsigned int session = log->property("session").toUInt();
+		if (qhPrivateLogs.value(session) == log)
+			qhPrivateLogs.remove(session);
+		qtwLogTabs->removeTab(index);
+		log->deleteLater();
+	});
 
 	pmModel = new UserModel(qtvUsers);
 	qtvUsers->setModel(pmModel);
@@ -1029,22 +1058,27 @@ void MainWindow::on_qtvUsers_customContextMenuRequested(const QPoint &mpos, bool
 }
 
 void MainWindow::on_qteLog_customContextMenuRequested(const QPoint &mpos) {
-	QString link = qteLog->anchorAt(mpos);
+	// Shared by the main log and all private chat tabs
+	LogTextBrowser *log = qobject_cast< LogTextBrowser * >(sender());
+	if (!log)
+		log = qteLog;
+
+	QString link = log->anchorAt(mpos);
 	if (!link.isEmpty()) {
 		QUrl l(link);
 
-		if (handleSpecialContextMenu(l, qteLog->mapToGlobal(mpos)))
+		if (handleSpecialContextMenu(l, log->mapToGlobal(mpos)))
 			return;
 	}
 
 	QPoint contentPosition =
 		QPoint(QApplication::isRightToLeft()
-				   ? (qteLog->horizontalScrollBar()->maximum() - qteLog->horizontalScrollBar()->value())
-				   : qteLog->horizontalScrollBar()->value(),
-			   qteLog->verticalScrollBar()->value());
-	QMenu *menu = qteLog->createStandardContextMenu(mpos + contentPosition);
+				   ? (log->horizontalScrollBar()->maximum() - log->horizontalScrollBar()->value())
+				   : log->horizontalScrollBar()->value(),
+			   log->verticalScrollBar()->value());
+	QMenu *menu = log->createStandardContextMenu(mpos + contentPosition);
 
-	QTextCursor cursor  = qteLog->cursorForPosition(mpos);
+	QTextCursor cursor  = log->cursorForPosition(mpos);
 	QTextCharFormat fmt = cursor.charFormat();
 
 	// Work around imprecise cursor image identification
@@ -1066,8 +1100,8 @@ void MainWindow::on_qteLog_customContextMenuRequested(const QPoint &mpos) {
 	}
 
 	menu->addSeparator();
-	menu->addAction(tr("Clear"), qteLog, SLOT(clear(void)));
-	menu->exec(qteLog->mapToGlobal(mpos));
+	menu->addAction(tr("Clear"), log, SLOT(clear(void)));
+	menu->exec(log->mapToGlobal(mpos));
 	delete menu;
 }
 
@@ -1083,7 +1117,7 @@ void MainWindow::saveImageAs() {
 	}
 
 	QString resName = qtcSaveImageCursor.charFormat().toImageFormat().name();
-	QVariant res    = qteLog->document()->resource(QTextDocument::ImageResource, resName);
+	QVariant res    = qtcSaveImageCursor.document()->resource(QTextDocument::ImageResource, resName);
 	QImage img      = res.value< QImage >();
 	bool ok         = img.save(fname);
 	if (!ok) {
@@ -2070,7 +2104,8 @@ void MainWindow::openTextMessageDialog(ClientUser *p) {
 			Global::get().sh->sendUserTextMessage(p->uiSession, msg);
 			Global::get().l->log(Log::TextMessage,
 								 tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), texm->message()),
-								 tr("Message to %1").arg(p->qsName), true);
+								 tr("Message to %1").arg(p->qsName), true, QString(), false, p->uiSession);
+			qtwLogTabs->setCurrentWidget(privateLog(p->uiSession));
 		}
 	}
 	delete texm;
@@ -2171,6 +2206,12 @@ void MainWindow::on_qaQuit_triggered() {
 }
 
 void MainWindow::sendChatbarText(QString qsText, bool plainText) {
+	LogTextBrowser *privateTab = currentPrivateLog();
+	if (privateTab && privateTab->property("session").toUInt() == 0) {
+		// The user of this tab is gone. Keep the typed text, the chat bar placeholder explains why.
+		return;
+	}
+
 	if (plainText) {
 		// Escape HTML, unify line endings, then convert spaces to non-breaking ones to prevent multiple
 		// simultaneous ones from being collapsed into one (as a normal HTML renderer does).
@@ -2199,7 +2240,12 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 	ClientUser *p = pmModel->getUser(qtvUsers->currentIndex());
 	Channel *c    = pmModel->getChannel(qtvUsers->currentIndex());
 
-	if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
+	if (LogTextBrowser *privateTab = currentPrivateLog()) {
+		// Private chat tab: always send to the user of this tab
+		p = ClientUser::get(privateTab->property("session").toUInt());
+		if (!p)
+			return; // User is offline
+	} else if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
 		// Channel message
 		if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
 			c = ClientUser::get(Global::get().uiSession)->cChannel;
@@ -2207,12 +2253,14 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 		Global::get().sh->sendChannelTextMessage(c->iId, qsMessage, false);
 		Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), qsMessage),
 							 tr("Message to channel %1").arg(c->qsName), true);
-	} else {
-		// User message
-		Global::get().sh->sendUserTextMessage(p->uiSession, qsMessage);
-		Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), qsMessage),
-							 tr("Message to %1").arg(p->qsName), true);
+		return;
 	}
+
+	// User message (private tab or user selected in the tree), shown in the private chat tab with that user
+	Global::get().sh->sendUserTextMessage(p->uiSession, qsMessage);
+	Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), qsMessage),
+						 tr("Message to %1").arg(p->qsName), true, QString(), false, p->uiSession);
+	qtwLogTabs->setCurrentWidget(privateLog(p->uiSession));
 }
 
 /// Handles Backtab/Shift-Tab for qteChat, which allows
@@ -3583,6 +3631,9 @@ void MainWindow::serverDisconnected(QAbstractSocket::SocketError err, QString re
 	qlChannelActions.clear();
 	qlUserActions.clear();
 
+	for (unsigned int session : qhPrivateLogs.keys())
+		endPrivateChat(session);
+
 	pmModel->removeAll();
 	qtvUsers->setRowHidden(0, QModelIndex(), true);
 
@@ -3817,8 +3868,18 @@ void MainWindow::updateChatBar() {
 	User *p    = pmModel->getUser(qtvUsers->currentIndex());
 	Channel *c = pmModel->getChannel(qtvUsers->currentIndex());
 
+	LogTextBrowser *privateTab = currentPrivateLog();
+
 	if (Global::get().uiSession == 0) {
 		qteChat->setDefaultText(tr("<center>Not connected</center>"), true);
+	} else if (privateTab) {
+		// Private chat tab: the tab decides the target, not the tree selection
+		const QString name = privateTab->property("chatName").toString().toHtmlEscaped();
+		if (privateTab->property("session").toUInt() != 0) {
+			qteChat->setDefaultText(tr("<center>Type message to user '%1' here</center>").arg(name));
+		} else {
+			qteChat->setDefaultText(tr("<center>'%1' is offline, messages can't be sent</center>").arg(name), true);
+		}
 	} else if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
 		// Channel tree target
 		if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
@@ -3832,6 +3893,92 @@ void MainWindow::updateChatBar() {
 	}
 
 	updateMenuPermissions();
+}
+
+void MainWindow::setupLogBrowser(LogTextBrowser *log) {
+	log->setDocument(new LogDocument(log));
+	log->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
+	log->document()->setDefaultStyleSheet(qApp->styleSheet());
+}
+
+void MainWindow::updateLogSettings() {
+	if (!qtwLogTabs) {
+		qteLog->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
+		qteLog->document()->setDefaultStyleSheet(qApp->styleSheet());
+		return;
+	}
+	for (int i = 0; i < qtwLogTabs->count(); ++i) {
+		if (auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->widget(i))) {
+			log->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
+			log->document()->setDefaultStyleSheet(qApp->styleSheet());
+		}
+	}
+}
+
+LogTextBrowser *MainWindow::privateLog(unsigned int session) {
+	if (LogTextBrowser *log = qhPrivateLogs.value(session))
+		return log;
+
+	const ClientUser *user = ClientUser::get(session);
+	if (!user || !qtwLogTabs)
+		return qteLog;
+
+	auto *log = new LogTextBrowser(qtwLogTabs);
+	log->setOpenLinks(false);
+	log->setContextMenuPolicy(Qt::CustomContextMenu);
+	log->setFrameStyle(qteLog->frameStyle());
+	log->setAccessibleName(tr("Private chat with %1").arg(user->qsName));
+	setupLogBrowser(log);
+	connect(log, &LogTextBrowser::customContextMenuRequested, this,
+			&MainWindow::on_qteLog_customContextMenuRequested);
+	connect(log, &LogTextBrowser::anchorClicked, this, &MainWindow::on_qteLog_anchorClicked);
+	connect(log, QOverload< const QUrl & >::of(&LogTextBrowser::highlighted), this,
+			&MainWindow::on_qteLog_highlighted);
+
+	log->setProperty("chatName", user->qsName);
+	log->setProperty("session", session);
+	qhPrivateLogs.insert(session, log);
+	qtwLogTabs->addTab(log, QString());
+	refreshLogTabText(log);
+	return log;
+}
+
+void MainWindow::endPrivateChat(unsigned int session) {
+	LogTextBrowser *log = qhPrivateLogs.take(session);
+	if (!log)
+		return;
+	log->setProperty("session", 0u);
+	refreshLogTabText(log);
+	if (isLogVisible(log))
+		updateChatBar();
+}
+
+bool MainWindow::isLogVisible(const LogTextBrowser *log) const {
+	return !qtwLogTabs || qtwLogTabs->currentWidget() == log;
+}
+
+void MainWindow::markLogUnread(LogTextBrowser *log) {
+	if (isLogVisible(log))
+		return;
+	log->setProperty("unread", true);
+	refreshLogTabText(log);
+}
+
+void MainWindow::refreshLogTabText(LogTextBrowser *log) {
+	// Escape '&' so names don't turn into keyboard shortcuts
+	QString text = log->property("chatName").toString().replace(QLatin1Char('&'), QLatin1String("&&"));
+	if (log != qteLog && log->property("session").toUInt() == 0)
+		text = tr("%1 (offline)").arg(text);
+	if (log->property("unread").toBool())
+		text += QLatin1String(" *");
+	qtwLogTabs->setTabText(qtwLogTabs->indexOf(log), text);
+}
+
+LogTextBrowser *MainWindow::currentPrivateLog() const {
+	if (!qtwLogTabs)
+		return nullptr;
+	auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->currentWidget());
+	return log == qteLog ? nullptr : log;
 }
 
 void MainWindow::customEvent(QEvent *evt) {
@@ -3900,7 +4047,8 @@ void MainWindow::on_qteLog_highlighted(const QUrl &url) {
 		QToolTip::hideText();
 	else {
 		if (isActiveWindow()) {
-			QToolTip::showText(QCursor::pos(), url.toString(), qteLog, QRect());
+			QWidget *log = qobject_cast< QWidget * >(sender());
+			QToolTip::showText(QCursor::pos(), url.toString(), log ? log : qteLog, QRect());
 		}
 	}
 }
