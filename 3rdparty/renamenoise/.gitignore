@@ -1,0 +1,13 @@
+# CMake
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
+
+# Build artifacts
+examples/renamenoise_demo
+examples/renamenoise_benchmark
+librenamenoise.a
+
+# Test artifact
+sample/renamenoise_babble_15db.pcm
