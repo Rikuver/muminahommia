@@ -11,11 +11,109 @@
 #include "Global.h"
 
 #include <QScrollArea>
+#include <QShortcut>
+#include <QtCore/QAbstractItemModel>
 #include <QtCore/QMutexLocker>
+#include <QtCore/QTimer>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QScreen>
+#include <QtGui/QTextDocument>
+#include <QtGui/QTextDocumentFragment>
+#include <QtWidgets/QAbstractButton>
+#include <QtWidgets/QAbstractItemView>
+#include <QtWidgets/QApplication>
+#include <QtWidgets/QComboBox>
 #include <QtWidgets/QDesktopWidget>
+#include <QtWidgets/QFrame>
+#include <QtWidgets/QGroupBox>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QPushButton>
+#include <QtWidgets/QStackedWidget>
+#include <QtWidgets/QTabBar>
+#include <QtWidgets/QTabWidget>
+
+#include <algorithm>
+
+namespace {
+/// Turns a UI string into plain text that can be searched: strips HTML and keyboard mnemonics ("&File")
+QString normalizeSearchText(QString text) {
+	if (Qt::mightBeRichText(text)) {
+		text = QTextDocumentFragment::fromHtml(text).toPlainText();
+	}
+
+	// "&&" is a literal ampersand, a single "&" marks a keyboard mnemonic
+	const QChar placeholder(0x1);
+	text.replace(QLatin1String("&&"), QString(placeholder));
+	text.remove(QLatin1Char('&'));
+	text.replace(placeholder, QLatin1Char('&'));
+
+	return text.simplified();
+}
+
+bool matchesSearch(const QString &text, const QString &query) {
+	return !text.isEmpty() && normalizeSearchText(text).contains(query, Qt::CaseInsensitive);
+}
+
+/// @returns Whether the given widget would be visible to the user once the given page is shown. Widgets that are
+/// 	only hidden because they live on another tab of a QTabWidget count as visible, as we can switch to that tab.
+bool isSearchable(const QWidget *widget, const QWidget *page) {
+	for (const QWidget *current = widget; current && current != page; current = current->parentWidget()) {
+		if (current->isWindow()) {
+			// e.g. the popup of a QComboBox
+			return false;
+		}
+
+		const bool explicitlyHidden =
+			current->testAttribute(Qt::WA_WState_Hidden) && current->testAttribute(Qt::WA_WState_ExplicitShowHide);
+		if (!explicitlyHidden) {
+			continue;
+		}
+
+		const QWidget *parent    = current->parentWidget();
+		const bool isInactiveTab = qobject_cast< const QStackedWidget * >(parent) && parent->parentWidget()
+								   && qobject_cast< const QTabWidget * >(parent->parentWidget());
+		if (!isInactiveTab) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+/// Collects the first matching cell of every row of the given model (recursively)
+void collectModelMatches(const QAbstractItemModel *model, const QModelIndex &parent, const QString &query,
+						 QList< QModelIndex > &matches) {
+	for (int row = 0; row < model->rowCount(parent); ++row) {
+		for (int column = 0; column < model->columnCount(parent); ++column) {
+			const QModelIndex index = model->index(row, column, parent);
+			if (matchesSearch(model->data(index, Qt::DisplayRole).toString(), query)) {
+				matches.append(index);
+				break;
+			}
+		}
+
+		const QModelIndex firstColumn = model->index(row, 0, parent);
+		if (model->hasChildren(firstColumn)) {
+			collectModelMatches(model, firstColumn, query, matches);
+		}
+	}
+}
+
+/// @returns The text that is shown for the given widget, if it has any
+QString displayedText(const QWidget *widget) {
+	if (const QLabel *label = qobject_cast< const QLabel * >(widget)) {
+		return label->text();
+	}
+	if (const QAbstractButton *button = qobject_cast< const QAbstractButton * >(widget)) {
+		return button->text();
+	}
+	if (const QGroupBox *groupBox = qobject_cast< const QGroupBox * >(widget)) {
+		return groupBox->title();
+	}
+	return QString();
+}
+} // namespace
 
 
 // init static member fields
@@ -77,6 +175,13 @@ ConfigDialog::ConfigDialog(QWidget *p) : QDialog(p) {
 	restoreAllButton->setToolTip(tr("Restore all defaults"));
 	restoreAllButton->setWhatsThis(tr("This button will restore the defaults for all settings."));
 	restoreAllButton->installEventFilter(new OverrideTabOrderFilter(restoreAllButton, applyButton));
+
+	qleSearch->installEventFilter(this);
+	QShortcut *searchShortcut = new QShortcut(QKeySequence::Find, this);
+	connect(searchShortcut, &QShortcut::activated, this, [this]() {
+		qleSearch->setFocus(Qt::ShortcutFocusReason);
+		qleSearch->selectAll();
+	});
 
 	updateTabOrder();
 	qlwIcons->setFocus();
@@ -189,6 +294,8 @@ void ConfigDialog::on_qlwIcons_currentItemChanged(QListWidgetItem *current, QLis
 	if (!current)
 		current = previous;
 
+	clearSearchHighlight();
+
 	if (current) {
 		QWidget *w = qhPages.value(qmIconWidgets.value(current));
 		if (w)
@@ -222,7 +329,8 @@ void ConfigDialog::updateTabOrder() {
 	}
 
 	setTabOrder(cancelButton, okButton);
-	setTabOrder(okButton, qlwIcons);
+	setTabOrder(okButton, qleSearch);
+	setTabOrder(qleSearch, qlwIcons);
 	setTabOrder(qlwIcons, contentFocusWidget);
 	if (resetButton && restoreButton && restoreAllButton) {
 		setTabOrder(contentFocusWidget, resetButton);
@@ -303,4 +411,285 @@ void ConfigDialog::accept() {
 	Global::get().s.save();
 
 	QDialog::accept();
+}
+
+void ConfigDialog::collectSearchMatches(ConfigWidget *page, const QString &query, QList< SearchMatch > &matches) const {
+	if (matchesSearch(page->title(), query)) {
+		SearchMatch match;
+		match.page = page;
+		match.text = page->title();
+		matches.append(match);
+	}
+
+	QList< SearchMatch > widgetMatches;
+	auto addMatch = [&](QWidget *widget, const QString &text, const QModelIndex &index = QModelIndex(),
+						int tabIndex = -1) {
+		SearchMatch match;
+		match.page     = page;
+		match.widget   = widget;
+		match.index    = index;
+		match.tabIndex = tabIndex;
+		match.text     = normalizeSearchText(text);
+		widgetMatches.append(match);
+	};
+
+	for (QWidget *widget : page->findChildren< QWidget * >()) {
+		if (!isSearchable(widget, page)) {
+			continue;
+		}
+
+		if (QTabBar *tabBar = qobject_cast< QTabBar * >(widget)) {
+			for (int i = 0; i < tabBar->count(); ++i) {
+				if (matchesSearch(tabBar->tabText(i), query)) {
+					addMatch(tabBar, tabBar->tabText(i), QModelIndex(), i);
+				}
+			}
+			continue;
+		}
+
+		if (QAbstractItemView *view = qobject_cast< QAbstractItemView * >(widget)) {
+			if (view->model()) {
+				QList< QModelIndex > indices;
+				collectModelMatches(view->model(), view->rootIndex(), query, indices);
+				for (const QModelIndex &index : indices) {
+					addMatch(view, index.data(Qt::DisplayRole).toString(), index);
+				}
+			}
+		}
+
+		if (QComboBox *comboBox = qobject_cast< QComboBox * >(widget)) {
+			bool found = false;
+			for (int i = 0; i < comboBox->count() && !found; ++i) {
+				if (matchesSearch(comboBox->itemText(i), query)) {
+					addMatch(comboBox, comboBox->itemText(i));
+					found = true;
+				}
+			}
+			if (found) {
+				continue;
+			}
+		}
+
+		const QString text = displayedText(widget);
+		if (matchesSearch(text, query)) {
+			addMatch(widget, text);
+		} else if (matchesSearch(widget->accessibleName(), query)) {
+			addMatch(widget, widget->accessibleName());
+		} else if (matchesSearch(widget->toolTip(), query)) {
+			addMatch(widget, text.isEmpty() ? widget->accessibleName() : text);
+		}
+	}
+
+	// Present the matches in the order in which they appear on the page (top to bottom, left to right)
+	std::stable_sort(widgetMatches.begin(), widgetMatches.end(),
+					 [page](const SearchMatch &lhs, const SearchMatch &rhs) {
+						 const QPoint lhsPos = lhs.widget->mapTo(page, QPoint(0, 0));
+						 const QPoint rhsPos = rhs.widget->mapTo(page, QPoint(0, 0));
+						 return lhsPos.y() != rhsPos.y() ? lhsPos.y() < rhsPos.y() : lhsPos.x() < rhsPos.x();
+					 });
+
+	matches.append(widgetMatches);
+}
+
+void ConfigDialog::on_qleSearch_textChanged(const QString &text) {
+	clearSearchHighlight();
+	m_searchMatches.clear();
+	m_currentSearchMatch = -1;
+
+	const QString query = normalizeSearchText(text);
+
+	for (int row = 0; row < qlwIcons->count(); ++row) {
+		QListWidgetItem *item = qlwIcons->item(row);
+		ConfigWidget *page    = qmIconWidgets.value(item);
+
+		if (query.isEmpty() || !page) {
+			item->setHidden(false);
+			continue;
+		}
+
+		QList< SearchMatch > pageMatches;
+		collectSearchMatches(page, query, pageMatches);
+		item->setHidden(pageMatches.isEmpty());
+		m_searchMatches.append(pageMatches);
+	}
+
+	// Never leave a hidden category selected
+	QListWidgetItem *current = qlwIcons->currentItem();
+	if (!current || current->isHidden()) {
+		for (int row = 0; row < qlwIcons->count(); ++row) {
+			if (!qlwIcons->item(row)->isHidden()) {
+				qlwIcons->setCurrentRow(row);
+				break;
+			}
+		}
+	}
+
+	updateSearchStatus();
+}
+
+void ConfigDialog::updateSearchStatus() {
+	if (qleSearch->text().trimmed().isEmpty()) {
+		qlSearchStatus->clear();
+		qlSearchStatus->setVisible(false);
+		qleSearch->setAccessibleDescription(QString());
+		return;
+	}
+
+	QString status;
+	if (m_searchMatches.isEmpty()) {
+		status = tr("No matching settings");
+	} else if (m_currentSearchMatch < 0) {
+		status = tr("%n match(es). Press Enter to show the first one.", "", static_cast< int >(m_searchMatches.size()));
+	} else {
+		const SearchMatch &match = m_searchMatches[m_currentSearchMatch];
+		status                   = tr("Match %1 of %2").arg(m_currentSearchMatch + 1).arg(m_searchMatches.size());
+		status += QLatin1Char('\n');
+		if (match.widget && !match.text.isEmpty()) {
+			//: Shown below the settings search field. %1 is the settings page, %2 the matching setting.
+			status += tr("%1: %2").arg(match.page->title(), match.text);
+		} else {
+			status += match.page->title();
+		}
+	}
+
+	qlSearchStatus->setText(status);
+	qlSearchStatus->setVisible(true);
+	qleSearch->setAccessibleDescription(status);
+}
+
+void ConfigDialog::showSearchMatch(int matchIndex) {
+	if (m_searchMatches.isEmpty()) {
+		return;
+	}
+
+	const int count         = static_cast< int >(m_searchMatches.size());
+	m_currentSearchMatch    = ((matchIndex % count) + count) % count;
+	const SearchMatch match = m_searchMatches[m_currentSearchMatch];
+
+	// Switch to the page containing the match
+	for (auto it = qmIconWidgets.constBegin(); it != qmIconWidgets.constEnd(); ++it) {
+		if (it.value() == match.page) {
+			qlwIcons->setCurrentItem(it.key());
+			break;
+		}
+	}
+
+	if (match.widget) {
+		// Switch to the tab containing the match (if any)
+		for (QWidget *current = match.widget; current && current != match.page; current = current->parentWidget()) {
+			QWidget *parent = current->parentWidget();
+			if (parent && qobject_cast< QStackedWidget * >(parent)) {
+				if (QTabWidget *tabWidget = qobject_cast< QTabWidget * >(parent->parentWidget())) {
+					tabWidget->setCurrentWidget(current);
+				}
+			}
+		}
+
+		if (match.tabIndex >= 0) {
+			if (QTabBar *tabBar = qobject_cast< QTabBar * >(match.widget)) {
+				tabBar->setCurrentIndex(match.tabIndex);
+			}
+		}
+	}
+
+	updateSearchStatus();
+
+	// Make sure that the geometry of the widgets on the newly shown page is up to date before highlighting
+	QApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+	highlightSearchMatch(match);
+}
+
+void ConfigDialog::highlightSearchMatch(const SearchMatch &match) {
+	clearSearchHighlight();
+
+	QWidget *widget = match.widget;
+	if (!widget) {
+		// The page title matched, there is nothing specific to highlight
+		return;
+	}
+
+	if (QScrollArea *scrollArea = qobject_cast< QScrollArea * >(qhPages.value(match.page))) {
+		scrollArea->ensureWidgetVisible(widget);
+	}
+
+	QWidget *base = widget;
+	QRect rect    = widget->rect();
+
+	if (match.index.isValid()) {
+		if (QAbstractItemView *view = qobject_cast< QAbstractItemView * >(widget)) {
+			view->scrollTo(match.index);
+			base = view->viewport();
+			rect = view->visualRect(match.index);
+		}
+	} else if (match.tabIndex >= 0) {
+		if (QTabBar *tabBar = qobject_cast< QTabBar * >(widget)) {
+			rect = tabBar->tabRect(match.tabIndex);
+		}
+	}
+
+	if (rect.isEmpty()) {
+		return;
+	}
+
+	rect = QRect(base->mapTo(this, rect.topLeft()), rect.size()).adjusted(-3, -3, 3, 3);
+	// Don't draw outside of the area that displays the settings pages
+	rect = rect.intersected(QRect(qswPages->mapTo(this, QPoint(0, 0)), qswPages->size()));
+	if (rect.isEmpty()) {
+		return;
+	}
+
+	QFrame *highlight = new QFrame(this);
+	highlight->setObjectName(QLatin1String("qfSearchHighlight"));
+	highlight->setAttribute(Qt::WA_TransparentForMouseEvents);
+	highlight->setFocusPolicy(Qt::NoFocus);
+	highlight->setStyleSheet(QString::fromLatin1("QFrame#qfSearchHighlight { border: 2px solid %1; border-radius: 3px; "
+												 "background: transparent; }")
+								 .arg(palette().color(QPalette::Highlight).name()));
+	highlight->setGeometry(rect);
+	highlight->show();
+	highlight->raise();
+
+	m_searchHighlight = highlight;
+	QTimer::singleShot(2000, highlight, &QObject::deleteLater);
+}
+
+void ConfigDialog::clearSearchHighlight() {
+	if (m_searchHighlight) {
+		m_searchHighlight->deleteLater();
+		m_searchHighlight = nullptr;
+	}
+}
+
+bool ConfigDialog::eventFilter(QObject *watched, QEvent *event) {
+	if (watched == qleSearch && event->type() == QEvent::KeyPress) {
+		QKeyEvent *keyEvent = static_cast< QKeyEvent * >(event);
+
+		switch (keyEvent->key()) {
+			case Qt::Key_Escape:
+				if (!qleSearch->text().isEmpty()) {
+					// Clear the search instead of closing the dialog
+					qleSearch->clear();
+					return true;
+				}
+				break;
+			case Qt::Key_Return:
+			case Qt::Key_Enter: {
+				// Don't let Enter trigger the dialog's default (OK) button while searching
+				const bool backwards = keyEvent->modifiers() & Qt::ShiftModifier;
+				if (m_currentSearchMatch < 0) {
+					showSearchMatch(backwards ? -1 : 0);
+				} else {
+					showSearchMatch(m_currentSearchMatch + (backwards ? -1 : 1));
+				}
+				return true;
+			}
+			case Qt::Key_Down:
+				qlwIcons->setFocus(Qt::TabFocusReason);
+				return true;
+			default:
+				break;
+		}
+	}
+
+	return QDialog::eventFilter(watched, event);
 }

@@ -11,7 +11,13 @@
 
 #include "ui_ConfigDialog.h"
 
+#include <QtCore/QList>
+#include <QtCore/QModelIndex>
 #include <QtCore/QMutex>
+#include <QtCore/QPersistentModelIndex>
+#include <QtCore/QPointer>
+
+class QFrame;
 
 class ConfigDialog : public QDialog, public Ui::ConfigDialog {
 private:
@@ -19,6 +25,29 @@ private:
 	Q_DISABLE_COPY(ConfigDialog)
 
 	void updateTabOrder();
+
+	/// A single search hit inside one of the settings pages
+	struct SearchMatch {
+		ConfigWidget *page = nullptr;
+		/// The matching widget. nullptr if the page title itself matched.
+		QPointer< QWidget > widget;
+		/// Set if the match is an item inside an item view (e.g. a tree or list)
+		QPersistentModelIndex index;
+		/// Set (>= 0) if the match is a tab of a QTabBar
+		int tabIndex = -1;
+		/// The matching text as shown to the user
+		QString text;
+	};
+
+	QList< SearchMatch > m_searchMatches;
+	int m_currentSearchMatch = -1;
+	QPointer< QFrame > m_searchHighlight;
+
+	void collectSearchMatches(ConfigWidget *page, const QString &query, QList< SearchMatch > &matches) const;
+	void updateSearchStatus();
+	void showSearchMatch(int matchIndex);
+	void highlightSearchMatch(const SearchMatch &match);
+	void clearSearchHighlight();
 
 protected:
 	static QMutex s_existingWidgetsMutex;
@@ -48,6 +77,12 @@ public slots:
 	void on_qlwIcons_currentItemChanged(QListWidgetItem *current, QListWidgetItem *previous);
 	void apply();
 	void accept() Q_DECL_OVERRIDE;
+
+protected slots:
+	void on_qleSearch_textChanged(const QString &text);
+
+protected:
+	bool eventFilter(QObject *watched, QEvent *event) Q_DECL_OVERRIDE;
 };
 
 #endif
