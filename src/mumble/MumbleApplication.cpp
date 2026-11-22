@@ -66,7 +66,8 @@ bool MumbleApplication::nativeEventFilter(const QByteArray &, void *message, lon
 	auto msg = reinterpret_cast< const MSG * >(message);
 	switch (msg->message) {
 		case WM_INPUT:
-			gsw->injectRawInputMessage(reinterpret_cast< HRAWINPUT >(msg->lParam));
+			gsw->injectRawInputMessage(reinterpret_cast< HRAWINPUT >(msg->lParam),
+									   GET_RAWINPUT_CODE_WPARAM(msg->wParam) == RIM_INPUT);
 			break;
 		case WM_INPUT_DEVICE_CHANGE:
 			// We don't care about GIDC_ARRIVAL because we add a device only when we receive input from it.
@@ -74,6 +75,10 @@ bool MumbleApplication::nativeEventFilter(const QByteArray &, void *message, lon
 				// The device is not available anymore, free resources allocated for it.
 				gsw->deviceRemoved(reinterpret_cast< const HANDLE >(msg->lParam));
 			}
+			break;
+		default:
+			// Drops suppressed keys, which reach us when one of our windows has focus.
+			return gsw->filterOwnInputMessage(*msg);
 	}
 
 	return false;

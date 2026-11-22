@@ -47,7 +47,22 @@ public:
 	/// to pass native Windows keyboard messages to GlobalShortcutWin.
 	///
 	/// @param msg The raw input handle to inject into GlobalShortcutWin.
-	void injectRawInputMessage(HRAWINPUT handle);
+	/// @param foreground Whether the input occurred while one of our windows had focus (RIM_INPUT).
+	void injectRawInputMessage(HRAWINPUT handle, bool foreground);
+
+	/// Windows doesn't call our low-level hooks for input that goes to our own foreground window,
+	/// so suppressible keys arrive there as regular window messages.
+	/// This method is meant to be called from the main thread for every native message;
+	/// it handles such keys the same way the keyboard hook would. Their raw input is ignored,
+	/// so that each key event is handled exactly once.
+	///
+	/// Limitations while one of our windows has focus: mouse buttons aren't suppressed (they go to
+	/// the window under the cursor, which may belong to another application), and neither are keys
+	/// that Windows consumes before they reach a window (e.g. Print Screen) or input to non-Qt
+	/// windows such as native file dialogs.
+	///
+	/// @returns Whether the message must be dropped (the key is suppressed).
+	bool filterOwnInputMessage(const MSG &msg);
 
 	ButtonInfo buttonInfo(const QVariant &button) override;
 	void run() override;
@@ -154,9 +169,32 @@ protected:
 	/// processing for the whole system (see commit 3dc7b00d0).
 	/// Note: a hook in a non-elevated process doesn't see input directed to elevated windows,
 	/// so suppression doesn't work while one of them has focus (the shortcuts still trigger).
+	/// The hooks aren't called for input directed to our own foreground window either,
+	/// see filterOwnInputMessage().
 	static LRESULT CALLBACK keyboardHookProc(int code, WPARAM wParam, LPARAM lParam);
 	static LRESULT CALLBACK mouseHookProc(int code, WPARAM wParam, LPARAM lParam);
 	static GlobalShortcutWin *s_instance;
+
+	/// Message-only window of the hook thread. filterOwnInputMessage() sends it the input it receives,
+	/// so that all suppression decisions are made on the hook thread, as with the hooks themselves.
+	static LRESULT CALLBACK hookWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+	std::atomic< HWND > m_hookWindow{ nullptr };
+	/// Parameters of a WM_OWN_INPUT message sent to m_hookWindow.
+	struct OwnInput {
+		std::size_t slot;
+		QVariant button;
+		bool down;
+		/// The key's first "down" message, not an auto-repeated one.
+		bool firstDown;
+	};
+	static constexpr UINT WM_OWN_INPUT = WM_APP + 1;
+	/// Posted to m_hookWindow to undo the toggle of the lock key given in wParam.
+	static constexpr UINT WM_RETOGGLE = WM_APP + 2;
+	/// Marks the key events that we inject ourselves (dwExtraInfo), so that we can ignore them.
+	static constexpr ULONG_PTR INJECTED_MARKER = 0x4D554D42; // "MUMB"
+	bool handleOwnInput(const OwnInput &input);
+	/// Called from the hook thread when a key that was pressed in our own window is released.
+	void ownWindowKeyReleased(std::size_t slot);
 
 	/// Runs a message loop on a dedicated thread, which (un)installs the hooks and receives their callbacks.
 	/// The thread is only created once suppression is needed for the first time.
@@ -164,7 +202,7 @@ protected:
 	/// Recomputes m_suppressible and asks the hook thread to (un)install hooks as needed.
 	/// Must be called with m_stateMutex held, after remap().
 	void updateSuppressionHooks();
-	/// Called from the hook thread, only for buttons whose slot is set in m_suppressible.
+	/// Called from the hook thread (hooks and m_hookWindow), only for buttons whose slot is set in m_suppressible.
 	/// @returns Whether the input event should be blocked.
 	bool handleHookedButton(std::size_t slot, const QVariant &button, bool down);
 
@@ -180,6 +218,10 @@ protected:
 	/// Whether the button is part of at least one shortcut with suppression enabled.
 	/// Atomic so that the hooks can let all other input through without taking m_stateMutex.
 	std::array< std::atomic< bool >, SUPPRESS_SLOTS > m_suppressible{};
+	/// Suppressed keys whose press went to our own window (hook thread only). Windows saw these presses,
+	/// so it considers the keys held and has already toggled Caps/Num/Scroll Lock. On release, the hook
+	/// lets the key-up through and the lock state is toggled back. Cleared when the shortcuts change.
+	std::array< bool, SUPPRESS_KEYBOARD_SLOTS > m_pressedInOwnWindow{};
 	bool m_wantKeyboardHook = false;
 	bool m_wantMouseHook    = false;
 	/// Set if installing a hook failed, in which case we stop offering suppression.

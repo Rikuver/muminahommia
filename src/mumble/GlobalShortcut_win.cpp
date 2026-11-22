@@ -112,6 +112,52 @@ Q_DECLARE_METATYPE(InputKeyboard)
 enum class InputMouse { Left = 1, Right, Middle, Side_1, Side_2 };
 Q_DECLARE_METATYPE(InputMouse)
 
+/// Builds the InputKeyboard of a raw input keyboard event.
+static InputKeyboard keyFromRawInput(const USHORT flags, USHORT scanCode, const USHORT virtualKey) {
+	if (virtualKey == VK_NUMLOCK) {
+		// Keys like “Pause / Break” and “Numlock” act strangely,
+		// sometimes like they are not even the same physical key.
+		// They use the so called escaped sequences, which we have to decipher.
+		scanCode = static_cast< USHORT >(MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC) | 0x100);
+	}
+
+	// E0 and E1 are escape sequences used for certain special keys, such as PRINT and PAUSE/BREAK.
+	// See https://www.win.tue.nl/~aeb/linux/kbd/scancodes-1.html.
+	if (flags & RI_KEY_E1) {
+		// For escaped sequences, turn the virtual key into the correct scan code using MapVirtualKey().
+		// MapVirtualKey() is unable to map VK_PAUSE (this is a known bug), hence we map that by hand.
+		scanCode = virtualKey != VK_PAUSE ? static_cast< USHORT >(MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC)) : 0x45;
+	}
+
+	InputKeyboard input = {};
+	input.code          = scanCode;
+	input.e0            = flags & RI_KEY_E0;
+	return input;
+}
+
+/// Builds the same InputKeyboard that keyFromRawInput() builds from raw input,
+/// out of the key information of low-level hooks and window messages.
+static InputKeyboard keyFromVirtualKey(const DWORD virtualKey, const DWORD scanCode, const bool extended) {
+	InputKeyboard input = {};
+	input.code          = static_cast< uint16_t >(scanCode);
+	input.e0            = extended;
+
+	switch (virtualKey) {
+		case VK_NUMLOCK:
+			input.code = static_cast< uint16_t >(MapVirtualKey(VK_NUMLOCK, MAPVK_VK_TO_VSC) | 0x100);
+			// Low-level hooks and window messages report Num Lock as extended, raw input doesn't.
+			input.e0 = false;
+			break;
+		case VK_SHIFT:
+		case VK_RSHIFT:
+			// Low-level hooks report the right shift key as extended, raw input doesn't.
+			input.e0 = false;
+			break;
+	}
+
+	return input;
+}
+
 #ifdef USE_XBOXINPUT
 struct InputXinput {
 	uint8_t device;
@@ -381,6 +427,19 @@ void GlobalShortcutWin::hookThreadMain() {
 	// Calling PeekMessage() forces the creation of this thread's message queue.
 	MSG msg;
 	PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+
+	WNDCLASSW windowClass     = {};
+	windowClass.lpfnWndProc   = hookWindowProc;
+	windowClass.hInstance     = GetModuleHandleW(nullptr);
+	windowClass.lpszClassName = L"MumbleGlobalShortcutHookWindow";
+	RegisterClassW(&windowClass);
+	const HWND window = CreateWindowExW(0, windowClass.lpszClassName, nullptr, 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
+										windowClass.hInstance, nullptr);
+	if (!window) {
+		qWarning("GlobalShortcutWin: Failed to create the hook window, error %lu!", GetLastError());
+	}
+	m_hookWindow = window;
+
 	m_hookThreadId = GetCurrentThreadId();
 
 	HHOOK keyboardHook = nullptr;
@@ -418,7 +477,16 @@ void GlobalShortcutWin::hookThreadMain() {
 			applyHook(mouseHook, wantMouse, WH_MOUSE_LL, mouseHookProc, "mouse");
 
 			m_hookFailed = (wantKeyboard && !keyboardHook) || (wantMouse && !mouseHook);
+			// A key pressed before the shortcuts changed may not be suppressible anymore.
+			m_pressedInOwnWindow.fill(false);
+		} else {
+			DispatchMessageW(&msg);
 		}
+	}
+
+	m_hookWindow = nullptr;
+	if (window) {
+		DestroyWindow(window);
 	}
 
 	if (keyboardHook) {
@@ -507,34 +575,157 @@ LRESULT CALLBACK GlobalShortcutWin::keyboardHookProc(int code, WPARAM wParam, LP
 	if (code == HC_ACTION && self) {
 		const auto info = reinterpret_cast< const KBDLLHOOKSTRUCT * >(lParam);
 
-		if (info->vkCode != 0xFF) {
-			// Build the same InputKeyboard that processMsgKeyboard() builds from raw input.
-			InputKeyboard input = {};
-			input.code          = static_cast< uint16_t >(info->scanCode);
-			input.e0            = (info->flags & LLKHF_EXTENDED) != 0;
+		if (info->vkCode != 0xFF && info->dwExtraInfo != INJECTED_MARKER) {
+			const InputKeyboard input =
+				keyFromVirtualKey(info->vkCode, info->scanCode, (info->flags & LLKHF_EXTENDED) != 0);
+			const bool down        = !(info->flags & LLKHF_UP);
+			const std::size_t slot = keyboardSlot(input.code, input.e0);
 
-			switch (info->vkCode) {
-				case VK_NUMLOCK:
-					input.code = static_cast< uint16_t >(MapVirtualKey(VK_NUMLOCK, MAPVK_VK_TO_VSC) | 0x100);
-					// Low-level hooks report Num Lock as extended, raw input doesn't.
-					input.e0 = false;
-					break;
-				case VK_RSHIFT:
-					// Low-level hooks report the right shift key as extended, raw input doesn't.
-					input.e0 = false;
-					break;
+			if (!down && slot != SUPPRESS_INVALID_SLOT && self->m_pressedInOwnWindow[slot]) {
+				// The key was pressed while our own window had focus and focus moved on before its release.
+				// Windows saw the press, so let the release through as well, or the key would stay held.
+				self->handleHookedButton(slot, QVariant::fromValue(input), down);
+				self->ownWindowKeyReleased(slot);
+				return CallNextHookEx(nullptr, code, wParam, lParam);
 			}
 
 			// Let everything that isn't suppressible through right away, without taking any lock.
-			const std::size_t slot = keyboardSlot(input.code, input.e0);
 			if (slot != SUPPRESS_INVALID_SLOT && self->m_suppressible[slot]
-				&& self->handleHookedButton(slot, QVariant::fromValue(input), !(info->flags & LLKHF_UP))) {
+				&& self->handleHookedButton(slot, QVariant::fromValue(input), down)) {
 				return 1;
 			}
 		}
 	}
 
 	return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+bool GlobalShortcutWin::filterOwnInputMessage(const MSG &msg) {
+	switch (msg.message) {
+		case WM_KEYDOWN:
+		case WM_SYSKEYDOWN:
+		case WM_KEYUP:
+		case WM_SYSKEYUP:
+			break;
+		default:
+			return false;
+	}
+
+	if (GetMessageExtraInfo() == static_cast< LPARAM >(INJECTED_MARKER)) {
+		// A lock key that we toggled back, nothing in Mumble should react to it.
+		return true;
+	}
+
+	const DWORD scanCode = (msg.lParam >> 16) & 0xFF;
+	const bool extended  = (msg.lParam & (1 << 24)) != 0;
+	const bool down      = msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN;
+	// wParam may be VK_PROCESSKEY while an IME is active, so recognize Num Lock by its scan code.
+	const DWORD virtualKey = scanCode == 0x45 && extended ? VK_NUMLOCK : static_cast< DWORD >(msg.wParam);
+
+	if (virtualKey == VK_SNAPSHOT) {
+		// Windows only delivers the release of Print Screen, it's handled through raw input.
+		return false;
+	}
+
+	if (down && virtualKey == VK_CONTROL && !extended) {
+		// With AltGr, Windows generates a fake left Ctrl press right before the right Alt press.
+		// Raw input and the keyboard hook don't report it as the left Ctrl key, so we must ignore it as well.
+		MSG next;
+		if (PeekMessageW(&next, msg.hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE | PM_NOYIELD)
+			&& (next.message == WM_KEYDOWN || next.message == WM_SYSKEYDOWN) && next.wParam == VK_MENU
+			&& (next.lParam & (1 << 24)) && next.time == msg.time) {
+			return false;
+		}
+	}
+
+	const InputKeyboard key = keyFromVirtualKey(virtualKey, scanCode, extended);
+
+	OwnInput input  = {};
+	input.slot      = keyboardSlot(key.code, key.e0);
+	input.button    = QVariant::fromValue(key);
+	input.down      = down;
+	input.firstDown = down && !(msg.lParam & (1 << 30));
+
+	// Let everything that isn't suppressible through right away.
+	if (input.slot == SUPPRESS_INVALID_SLOT || !m_suppressible[input.slot]) {
+		return false;
+	}
+
+	// Decide on the hook thread, like for the hooks: handleButton() emits signals, which must not
+	// be delivered directly to the main thread's objects while we're holding m_stateMutex.
+	const HWND hookWindow = m_hookWindow;
+	return hookWindow && SendMessageW(hookWindow, WM_OWN_INPUT, 0, reinterpret_cast< LPARAM >(&input)) != 0;
+}
+
+bool GlobalShortcutWin::handleOwnInput(const OwnInput &input) {
+	bool suppress = handleHookedButton(input.slot, input.button, input.down);
+
+	if (input.down) {
+		if (suppress && input.firstDown) {
+			m_pressedInOwnWindow[input.slot] = true;
+		}
+	} else if (m_pressedInOwnWindow[input.slot]) {
+		// We dropped the press, so drop the release as well.
+		suppress = true;
+		ownWindowKeyReleased(input.slot);
+	}
+
+	return suppress;
+}
+
+/// @returns The virtual key code of Caps/Num/Scroll Lock if the slot belongs to one of them, otherwise 0.
+static DWORD lockKeyOfSlot(const std::size_t slot) {
+	// Without the E0 flag, a key's slot is its scan code (see GlobalShortcutWin::keyboardSlot()).
+	if (slot == 0x3A) {
+		return VK_CAPITAL;
+	}
+	if (slot == (MapVirtualKey(VK_NUMLOCK, MAPVK_VK_TO_VSC) | 0x100)) {
+		return VK_NUMLOCK;
+	}
+	if (slot == 0x46) {
+		return VK_SCROLL;
+	}
+	return 0;
+}
+
+void GlobalShortcutWin::ownWindowKeyReleased(const std::size_t slot) {
+	m_pressedInOwnWindow[slot] = false;
+
+	// Windows toggled the lock state on the press, before our window got the key. Toggle it back.
+	// The key is released now, so the injected press is a real press rather than an auto-repeat.
+	if (const DWORD lockKey = lockKeyOfSlot(slot)) {
+		// Don't inject from within a hook callback, but after it returned.
+		PostMessageW(m_hookWindow, WM_RETOGGLE, lockKey, 0);
+	}
+}
+
+LRESULT CALLBACK GlobalShortcutWin::hookWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+	GlobalShortcutWin *self = s_instance;
+
+	switch (msg) {
+		case WM_OWN_INPUT:
+			return self && self->handleOwnInput(*reinterpret_cast< const OwnInput * >(lParam)) ? 1 : 0;
+		case WM_RETOGGLE: {
+			const auto virtualKey = static_cast< WORD >(wParam);
+
+			INPUT inputs[2] = {};
+			for (INPUT &input : inputs) {
+				input.type           = INPUT_KEYBOARD;
+				input.ki.wVk         = virtualKey;
+				input.ki.wScan       = static_cast< WORD >(MapVirtualKeyW(virtualKey, MAPVK_VK_TO_VSC));
+				input.ki.dwFlags     = virtualKey == VK_NUMLOCK ? KEYEVENTF_EXTENDEDKEY : 0;
+				input.ki.dwExtraInfo = INJECTED_MARKER;
+			}
+			inputs[1].ki.dwFlags |= KEYEVENTF_KEYUP;
+
+			if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
+				qWarning("GlobalShortcutWin: Failed to restore the state of a lock key, error %lu!", GetLastError());
+			}
+			return 0;
+		}
+	}
+
+	return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 LRESULT CALLBACK GlobalShortcutWin::mouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
@@ -728,7 +919,7 @@ void GlobalShortcutWin::tryPlaceEvent(HANDLE device, bool rawhid, std::unique_pt
 	}
 }
 
-void GlobalShortcutWin::injectRawInputMessage(HRAWINPUT handle) {
+void GlobalShortcutWin::injectRawInputMessage(HRAWINPUT handle, const bool foreground) {
 	UINT size = 0;
 	if (GetRawInputData(handle, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) != 0) {
 		return;
@@ -757,6 +948,20 @@ void GlobalShortcutWin::injectRawInputMessage(HRAWINPUT handle) {
 			if (keyboard.VKey == 0xFF) {
 				// Discard "fake keys" which are part of an escaped sequence.
 				return;
+			}
+
+			if (keyboard.ExtraInformation == INJECTED_MARKER) {
+				// A lock key that we toggled back, see filterOwnInputMessage().
+				return;
+			}
+
+			if (foreground && keyboard.VKey != VK_SNAPSHOT) {
+				// Suppressible keys also arrive as window messages, which are handled by filterOwnInputMessage().
+				const InputKeyboard key = keyFromRawInput(keyboard.Flags, keyboard.MakeCode, keyboard.VKey);
+				const std::size_t slot  = keyboardSlot(key.code, key.e0);
+				if (slot != SUPPRESS_INVALID_SLOT && m_suppressible[slot]) {
+					return;
+				}
 			}
 
 			tryPlaceEvent(input->header.hDevice, false,
@@ -831,24 +1036,7 @@ void GlobalShortcutWin::processMsgHid(MsgHid &msg) {
 }
 
 void GlobalShortcutWin::processMsgKeyboard(MsgKeyboard &msg) {
-	if (msg.virtualKey == VK_NUMLOCK) {
-		// Keys like “Pause / Break” and “Numlock” act strangely,
-		// sometimes like they are not even the same physical key.
-		// They use the so called escaped sequences, which we have to decipher.
-		msg.scanCode = MapVirtualKey(msg.virtualKey, MAPVK_VK_TO_VSC) | 0x100;
-	}
-
-	// E0 and E1 are escape sequences used for certain special keys, such as PRINT and PAUSE/BREAK.
-	// See https://www.win.tue.nl/~aeb/linux/kbd/scancodes-1.html.
-	if (msg.flags & RI_KEY_E1) {
-		// For escaped sequences, turn the virtual key into the correct scan code using MapVirtualKey().
-		// MapVirtualKey() is unable to map VK_PAUSE (this is a known bug), hence we map that by hand.
-		msg.scanCode = msg.virtualKey != VK_PAUSE ? MapVirtualKey(msg.virtualKey, MAPVK_VK_TO_VSC) : 0x45;
-	}
-
-	InputKeyboard input = {};
-	input.code          = msg.scanCode;
-	input.e0            = msg.flags & RI_KEY_E0;
+	const InputKeyboard input = keyFromRawInput(msg.flags, msg.scanCode, msg.virtualKey);
 
 	handleButton(QVariant::fromValue(input), !(msg.flags & RI_KEY_BREAK));
 }
