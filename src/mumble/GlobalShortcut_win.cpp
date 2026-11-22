@@ -27,6 +27,7 @@
 #include <mutex>
 #include <sstream>
 
+#include <QDebug>
 #include <QUuid>
 
 extern "C" {
@@ -329,13 +330,253 @@ GlobalShortcutWin::GlobalShortcutWin()
 	// Register the MetaTypes if they have not already been registered (e.g in Settings)
 	registerMetaTypes();
 
+	s_instance = this;
+
 	start();
 }
 
 GlobalShortcutWin::~GlobalShortcutWin() {
 	requestInterruption();
+	{ std::lock_guard< std::mutex > lock(m_waitMutex); }
 	m_condVar.notify_all();
 	wait();
+
+	// The hook thread is only created by our own thread, which isn't running anymore.
+	if (m_hookThread.joinable()) {
+		PostThreadMessageW(m_hookThreadId, WM_QUIT, 0, 0);
+		m_hookThread.join();
+	}
+
+	s_instance = nullptr;
+}
+
+GlobalShortcutWin *GlobalShortcutWin::s_instance = nullptr;
+
+void GlobalShortcutWin::needRemap() {
+	// Wake up our thread so that the new shortcuts (and the hooks needed for suppression)
+	// are applied right away, instead of on the next input event.
+	// bNeedRemap was set by the caller; locking ensures that run() is either already waiting or will see it.
+	{ std::lock_guard< std::mutex > lock(m_waitMutex); }
+	m_condVar.notify_all();
+}
+
+bool GlobalShortcutWin::canSuppress() {
+	return !m_hookFailed;
+}
+
+std::size_t GlobalShortcutWin::keyboardSlot(uint16_t code, bool e0) {
+	if (code >= SUPPRESS_KEYBOARD_SLOTS / 2) {
+		return SUPPRESS_INVALID_SLOT;
+	}
+
+	return code | (e0 ? SUPPRESS_KEYBOARD_SLOTS / 2 : 0);
+}
+
+std::size_t GlobalShortcutWin::mouseSlot(int button) {
+	const std::size_t slot = SUPPRESS_KEYBOARD_SLOTS + static_cast< std::size_t >(button);
+	return slot < SUPPRESS_SLOTS ? slot : SUPPRESS_INVALID_SLOT;
+}
+
+void GlobalShortcutWin::hookThreadMain() {
+	// Calling PeekMessage() forces the creation of this thread's message queue.
+	MSG msg;
+	PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+	m_hookThreadId = GetCurrentThreadId();
+
+	HHOOK keyboardHook = nullptr;
+	HHOOK mouseHook    = nullptr;
+
+	auto applyHook = [](HHOOK &hook, const bool want, const int type, const HOOKPROC proc, const char *name) {
+		if (hook) {
+			// Windows silently removes hooks whose callback takes too long (LowLevelHooksTimeout).
+			// There's no way to get notified, so we reinstall the hook whenever the shortcuts change.
+			if (!UnhookWindowsHookEx(hook) && want) {
+				qWarning("GlobalShortcutWin: The %s hook had been removed by the system, reinstalling it.", name);
+			}
+			hook = nullptr;
+		}
+
+		if (want) {
+			hook = SetWindowsHookExW(type, proc, GetModuleHandleW(nullptr), 0);
+			if (!hook) {
+				qWarning("GlobalShortcutWin: Failed to install %s hook, error %lu!", name, GetLastError());
+			}
+		}
+	};
+
+	// Low-level hook callbacks are dispatched from within GetMessage().
+	while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+		if (msg.message == WM_APP) {
+			bool wantKeyboard, wantMouse;
+			{
+				std::lock_guard< std::mutex > lock(m_stateMutex);
+				wantKeyboard = m_wantKeyboardHook;
+				wantMouse    = m_wantMouseHook;
+			}
+
+			applyHook(keyboardHook, wantKeyboard, WH_KEYBOARD_LL, keyboardHookProc, "keyboard");
+			applyHook(mouseHook, wantMouse, WH_MOUSE_LL, mouseHookProc, "mouse");
+
+			m_hookFailed = (wantKeyboard && !keyboardHook) || (wantMouse && !mouseHook);
+		}
+	}
+
+	if (keyboardHook) {
+		UnhookWindowsHookEx(keyboardHook);
+	}
+	if (mouseHook) {
+		UnhookWindowsHookEx(mouseHook);
+	}
+}
+
+void GlobalShortcutWin::updateSuppressionHooks() {
+	for (auto &suppressible : m_suppressible) {
+		suppressible = false;
+	}
+
+	bool wantKeyboard = false;
+	bool wantMouse    = false;
+
+	for (int i = 0; i < qlButtonList.size(); ++i) {
+		const QVariant &button = qlButtonList.at(i);
+
+		std::size_t slot = SUPPRESS_INVALID_SLOT;
+		if (button.userType() == qMetaTypeId< InputKeyboard >()) {
+			const auto key = button.value< InputKeyboard >();
+			slot           = keyboardSlot(key.code, key.e0);
+		} else if (button.userType() == qMetaTypeId< InputMouse >()) {
+			const auto mouseButton = button.value< InputMouse >();
+			// Suppressing the left mouse button would make the system unusable.
+			if (mouseButton != InputMouse::Left) {
+				slot = mouseSlot(static_cast< int >(mouseButton));
+			}
+		}
+
+		if (slot == SUPPRESS_INVALID_SLOT) {
+			continue;
+		}
+
+		for (const ShortcutKey *sk : qlShortcutList.at(i)) {
+			if (sk->s.bSuppress) {
+				m_suppressible[slot] = true;
+				if (slot < SUPPRESS_KEYBOARD_SLOTS) {
+					wantKeyboard = true;
+				} else {
+					wantMouse = true;
+				}
+				break;
+			}
+		}
+	}
+
+	m_wantKeyboardHook = wantKeyboard;
+	m_wantMouseHook    = wantMouse;
+
+	if (!m_hookThread.joinable()) {
+		if (!wantKeyboard && !wantMouse) {
+			// Suppression was never used, so there's no need for the hook thread.
+			return;
+		}
+
+		m_hookThread = std::thread(&GlobalShortcutWin::hookThreadMain, this);
+		// Wait for the hook thread to create its message queue, so that we can post messages to it.
+		while (!m_hookThreadId) {
+			std::this_thread::yield();
+		}
+	}
+
+	// Always notify the hook thread, so that it also reinstalls hooks that were removed by the system.
+	PostThreadMessageW(m_hookThreadId, WM_APP, 0, 0);
+}
+
+bool GlobalShortcutWin::handleHookedButton(const std::size_t slot, const QVariant &button, const bool down) {
+	std::lock_guard< std::mutex > lock(m_stateMutex);
+	// The shortcuts may have changed since the caller checked.
+	if (!m_suppressible[slot]) {
+		return false;
+	}
+
+	// The hook is called before the raw input message is generated. If we don't block the event,
+	// the raw input message arrives later on and handleButton() simply ignores it, as the state
+	// of the button didn't change. If we do block it, no raw input message is generated at all.
+	return handleButton(button, down);
+}
+
+LRESULT CALLBACK GlobalShortcutWin::keyboardHookProc(int code, WPARAM wParam, LPARAM lParam) {
+	GlobalShortcutWin *self = s_instance;
+	if (code == HC_ACTION && self) {
+		const auto info = reinterpret_cast< const KBDLLHOOKSTRUCT * >(lParam);
+
+		if (info->vkCode != 0xFF) {
+			// Build the same InputKeyboard that processMsgKeyboard() builds from raw input.
+			InputKeyboard input = {};
+			input.code          = static_cast< uint16_t >(info->scanCode);
+			input.e0            = (info->flags & LLKHF_EXTENDED) != 0;
+
+			switch (info->vkCode) {
+				case VK_NUMLOCK:
+					input.code = static_cast< uint16_t >(MapVirtualKey(VK_NUMLOCK, MAPVK_VK_TO_VSC) | 0x100);
+					// Low-level hooks report Num Lock as extended, raw input doesn't.
+					input.e0 = false;
+					break;
+				case VK_RSHIFT:
+					// Low-level hooks report the right shift key as extended, raw input doesn't.
+					input.e0 = false;
+					break;
+			}
+
+			// Let everything that isn't suppressible through right away, without taking any lock.
+			const std::size_t slot = keyboardSlot(input.code, input.e0);
+			if (slot != SUPPRESS_INVALID_SLOT && self->m_suppressible[slot]
+				&& self->handleHookedButton(slot, QVariant::fromValue(input), !(info->flags & LLKHF_UP))) {
+				return 1;
+			}
+		}
+	}
+
+	return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+LRESULT CALLBACK GlobalShortcutWin::mouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
+	GlobalShortcutWin *self = s_instance;
+	if (code == HC_ACTION && self) {
+		const auto info = reinterpret_cast< const MSLLHOOKSTRUCT * >(lParam);
+
+		InputMouse button = InputMouse::Left;
+		bool down         = false;
+		bool isButton     = true;
+
+		switch (wParam) {
+			case WM_RBUTTONDOWN:
+			case WM_RBUTTONUP:
+				button = InputMouse::Right;
+				down   = wParam == WM_RBUTTONDOWN;
+				break;
+			case WM_MBUTTONDOWN:
+			case WM_MBUTTONUP:
+				button = InputMouse::Middle;
+				down   = wParam == WM_MBUTTONDOWN;
+				break;
+			case WM_XBUTTONDOWN:
+			case WM_XBUTTONUP:
+				button = HIWORD(info->mouseData) == XBUTTON1 ? InputMouse::Side_1 : InputMouse::Side_2;
+				down   = wParam == WM_XBUTTONDOWN;
+				break;
+			default:
+				// Mouse movement, wheel and left button: pass through as fast as possible.
+				isButton = false;
+		}
+
+		if (isButton) {
+			const std::size_t slot = mouseSlot(static_cast< int >(button));
+			if (slot != SUPPRESS_INVALID_SLOT && self->m_suppressible[slot]
+				&& self->handleHookedButton(slot, QVariant::fromValue(button), down)) {
+				return 1;
+			}
+		}
+	}
+
+	return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
 void GlobalShortcutWin::run() {
@@ -402,18 +643,30 @@ void GlobalShortcutWin::run() {
 		qWarning("GlobalShortcutWindows: RegisterRawInputDevices() failed with error %u!", GetLastError());
 	}
 
-	std::mutex mutex;
-	std::unique_lock< decltype(mutex) > lock(mutex);
+	{
+		std::lock_guard< std::mutex > stateLock(m_stateMutex);
+		remap();
+		updateSuppressionHooks();
+	}
 
 	do {
-		m_condVar.wait(lock);
+		{
+			// The predicate makes sure that remap and shutdown requests are never missed.
+			// Raw input doesn't lock m_waitMutex before notifying (to keep that path cheap),
+			// a missed notification there is picked up by the next input event.
+			std::unique_lock< std::mutex > lock(m_waitMutex);
+			m_condVar.wait(lock, [this]() { return bNeedRemap || isInterruptionRequested() || m_msgQueue.front(); });
+		}
 
 		if (bNeedRemap) {
+			std::lock_guard< std::mutex > stateLock(m_stateMutex);
 			remap();
+			updateSuppressionHooks();
 		}
 
 		while (const std::unique_ptr< MsgRaw > *item = m_msgQueue.front()) {
 			const std::unique_ptr< MsgRaw > &msg = *item;
+			std::lock_guard< std::mutex > stateLock(m_stateMutex);
 
 			switch (msg->type()) {
 				case MsgRaw::Hid:

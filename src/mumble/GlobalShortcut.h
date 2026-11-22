@@ -19,6 +19,8 @@
 #include "ui_GlobalShortcut.h"
 #include "ui_GlobalShortcutTarget.h"
 
+#include <atomic>
+
 class GlobalShortcut : public QObject {
 	friend class GlobalShortcutEngine;
 	friend class GlobalShortcutConfig;
@@ -244,7 +246,8 @@ public:
 		ButtonInfo() : device(tr("Unknown")), name(tr("Unknown")) {}
 	};
 
-	bool bNeedRemap;
+	/// Set from the GUI thread, read and reset by the engine's thread.
+	std::atomic< bool > bNeedRemap;
 	Timer tReset;
 
 	static GlobalShortcutEngine *engine;

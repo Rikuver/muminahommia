@@ -12,9 +12,13 @@
 #	include "XboxInput.h"
 #endif
 
+#include <array>
+#include <atomic>
 #include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 
 #include <gsl/span>
@@ -47,6 +51,8 @@ public:
 
 	ButtonInfo buttonInfo(const QVariant &button) override;
 	void run() override;
+	void needRemap() override;
+	bool canSuppress() override;
 
 	GlobalShortcutWin();
 	~GlobalShortcutWin() override;
@@ -118,6 +124,8 @@ protected:
 	void processOther();
 
 	std::condition_variable m_condVar;
+	/// Locked briefly before notifying m_condVar about remap and shutdown requests, so that they can't get lost.
+	std::mutex m_waitMutex;
 
 	rigtorp::SPSCQueue< std::unique_ptr< MsgRaw > > m_msgQueue;
 
@@ -139,6 +147,46 @@ protected:
 	std::unique_ptr< GKeyLibrary > m_gkey;
 #endif
 	DeviceMap::iterator addDevice(const HANDLE deviceHandle);
+
+	/// Raw input can only observe input, it cannot stop it from reaching other applications.
+	/// To implement the "suppress" feature we install low-level keyboard/mouse hooks, but only
+	/// while at least one shortcut actually requests suppression, because hooks slow down input
+	/// processing for the whole system (see commit 3dc7b00d0).
+	/// Note: a hook in a non-elevated process doesn't see input directed to elevated windows,
+	/// so suppression doesn't work while one of them has focus (the shortcuts still trigger).
+	static LRESULT CALLBACK keyboardHookProc(int code, WPARAM wParam, LPARAM lParam);
+	static LRESULT CALLBACK mouseHookProc(int code, WPARAM wParam, LPARAM lParam);
+	static GlobalShortcutWin *s_instance;
+
+	/// Runs a message loop on a dedicated thread, which (un)installs the hooks and receives their callbacks.
+	/// The thread is only created once suppression is needed for the first time.
+	void hookThreadMain();
+	/// Recomputes m_suppressible and asks the hook thread to (un)install hooks as needed.
+	/// Must be called with m_stateMutex held, after remap().
+	void updateSuppressionHooks();
+	/// Called from the hook thread, only for buttons whose slot is set in m_suppressible.
+	/// @returns Whether the input event should be blocked.
+	bool handleHookedButton(std::size_t slot, const QVariant &button, bool down);
+
+	/// Protects the button state of GlobalShortcutEngine, which is accessed from both
+	/// this engine's thread and the hook thread.
+	std::mutex m_stateMutex;
+	/// Slots 0 to 0x3FF are keyboard keys (scan code | E0 << 9), the following ones mouse buttons.
+	static constexpr std::size_t SUPPRESS_KEYBOARD_SLOTS = 0x400;
+	static constexpr std::size_t SUPPRESS_SLOTS          = SUPPRESS_KEYBOARD_SLOTS + 8;
+	static constexpr std::size_t SUPPRESS_INVALID_SLOT   = SUPPRESS_SLOTS;
+	static std::size_t keyboardSlot(uint16_t code, bool e0);
+	static std::size_t mouseSlot(int button);
+	/// Whether the button is part of at least one shortcut with suppression enabled.
+	/// Atomic so that the hooks can let all other input through without taking m_stateMutex.
+	std::array< std::atomic< bool >, SUPPRESS_SLOTS > m_suppressible{};
+	bool m_wantKeyboardHook = false;
+	bool m_wantMouseHook    = false;
+	/// Set if installing a hook failed, in which case we stop offering suppression.
+	std::atomic< bool > m_hookFailed{ false };
+
+	std::thread m_hookThread;
+	std::atomic< DWORD > m_hookThreadId{ 0 };
 
 private:
 	std::map< HANDLE, unsigned int > m_throttleThreshold;
