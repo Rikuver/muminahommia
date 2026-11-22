@@ -657,22 +657,6 @@ bool GlobalShortcutWin::filterOwnInputMessage(const MSG &msg) {
 	return hookWindow && SendMessageW(hookWindow, WM_OWN_INPUT, 0, reinterpret_cast< LPARAM >(&input)) != 0;
 }
 
-bool GlobalShortcutWin::handleOwnInput(const OwnInput &input) {
-	bool suppress = handleHookedButton(input.slot, input.button, input.down);
-
-	if (input.down) {
-		if (suppress && input.firstDown) {
-			m_pressedInOwnWindow[input.slot] = true;
-		}
-	} else if (m_pressedInOwnWindow[input.slot]) {
-		// We dropped the press, so drop the release as well.
-		suppress = true;
-		ownWindowKeyReleased(input.slot);
-	}
-
-	return suppress;
-}
-
 /// @returns The virtual key code of Caps/Num/Scroll Lock if the slot belongs to one of them, otherwise 0.
 static DWORD lockKeyOfSlot(const std::size_t slot) {
 	// Without the E0 flag, a key's slot is its scan code (see GlobalShortcutWin::keyboardSlot()).
@@ -688,15 +672,32 @@ static DWORD lockKeyOfSlot(const std::size_t slot) {
 	return 0;
 }
 
-void GlobalShortcutWin::ownWindowKeyReleased(const std::size_t slot) {
-	m_pressedInOwnWindow[slot] = false;
+bool GlobalShortcutWin::handleOwnInput(const OwnInput &input) {
+	bool suppress = handleHookedButton(input.slot, input.button, input.down);
 
-	// Windows toggled the lock state on the press, before our window got the key. Toggle it back.
-	// The key is released now, so the injected press is a real press rather than an auto-repeat.
-	if (const DWORD lockKey = lockKeyOfSlot(slot)) {
-		// Don't inject from within a hook callback, but after it returned.
-		PostMessageW(m_hookWindow, WM_RETOGGLE, lockKey, 0);
+	if (input.down) {
+		if (suppress && input.firstDown) {
+			m_pressedInOwnWindow[input.slot] = true;
+
+			// Windows toggled the lock state on this press, before our window got the key.
+			// Toggle it back right away, so that the lock stays off while the key is held.
+			if (const DWORD lockKey = lockKeyOfSlot(input.slot)) {
+				// Inject after the input has been handled, not while the main thread waits for us.
+				PostMessageW(m_hookWindow, WM_RETOGGLE, lockKey, 0);
+			}
+		}
+	} else if (m_pressedInOwnWindow[input.slot]) {
+		// We dropped the press, so drop the release as well.
+		suppress = true;
+		ownWindowKeyReleased(input.slot);
 	}
+
+	return suppress;
+}
+
+void GlobalShortcutWin::ownWindowKeyReleased(const std::size_t slot) {
+	// The lock state was already toggled back on the press, see handleOwnInput().
+	m_pressedInOwnWindow[slot] = false;
 }
 
 LRESULT CALLBACK GlobalShortcutWin::hookWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -707,6 +708,10 @@ LRESULT CALLBACK GlobalShortcutWin::hookWindowProc(HWND hwnd, UINT msg, WPARAM w
 			return self && self->handleOwnInput(*reinterpret_cast< const OwnInput * >(lParam)) ? 1 : 0;
 		case WM_RETOGGLE: {
 			const auto virtualKey = static_cast< WORD >(wParam);
+			// A lock key only toggles when it goes down from the released state. If it's still held,
+			// release it and press it again: Windows then still considers it held until the user releases
+			// it, which keeps the key state consistent. Otherwise, press and release it.
+			const bool held = (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
 			INPUT inputs[2] = {};
 			for (INPUT &input : inputs) {
@@ -716,7 +721,7 @@ LRESULT CALLBACK GlobalShortcutWin::hookWindowProc(HWND hwnd, UINT msg, WPARAM w
 				input.ki.dwFlags     = virtualKey == VK_NUMLOCK ? KEYEVENTF_EXTENDEDKEY : 0;
 				input.ki.dwExtraInfo = INJECTED_MARKER;
 			}
-			inputs[1].ki.dwFlags |= KEYEVENTF_KEYUP;
+			inputs[held ? 0 : 1].ki.dwFlags |= KEYEVENTF_KEYUP;
 
 			if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
 				qWarning("GlobalShortcutWin: Failed to restore the state of a lock key, error %lu!", GetLastError());

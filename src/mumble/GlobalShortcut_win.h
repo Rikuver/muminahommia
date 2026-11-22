@@ -219,8 +219,9 @@ protected:
 	/// Atomic so that the hooks can let all other input through without taking m_stateMutex.
 	std::array< std::atomic< bool >, SUPPRESS_SLOTS > m_suppressible{};
 	/// Suppressed keys whose press went to our own window (hook thread only). Windows saw these presses,
-	/// so it considers the keys held and has already toggled Caps/Num/Scroll Lock. On release, the hook
-	/// lets the key-up through and the lock state is toggled back. Cleared when the shortcuts change.
+	/// so it considers the keys held and has already toggled Caps/Num/Scroll Lock, which we toggle back
+	/// right away. If focus moves elsewhere before the release, the hook lets the key-up through.
+	/// Cleared when the shortcuts change.
 	std::array< bool, SUPPRESS_KEYBOARD_SLOTS > m_pressedInOwnWindow{};
 	bool m_wantKeyboardHook = false;
 	bool m_wantMouseHook    = false;
