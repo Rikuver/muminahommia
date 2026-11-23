@@ -209,6 +209,7 @@ const SettingsKey CHAT_HISTORY_ENABLED_KEY             = { "chat_history_enabled
 const SettingsKey CHAT_HISTORY_MAX_MESSAGES_KEY        = { "chat_history_max_messages" };
 const SettingsKey CHAT_HISTORY_RESTORE_COUNT_KEY       = { "chat_history_restore_count" };
 const SettingsKey CHAT_HISTORY_STORE_IMAGES_KEY        = { "chat_history_store_images" };
+const SettingsKey CHAT_HISTORY_DIRECTORY_KEY           = { "chat_history_directory" };
 
 // Last connection
 const SettingsKey LAST_USERNAME_KEY    = { "username" };

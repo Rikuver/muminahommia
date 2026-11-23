@@ -23,6 +23,7 @@ public slots:
 	void save() const Q_DECL_OVERRIDE;
 	void load(const Settings &r) Q_DECL_OVERRIDE;
 	void on_qpbClearChatHistory_clicked();
+	void on_qpbChatHistoryBrowse_clicked();
 };
 
 #endif

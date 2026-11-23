@@ -376,6 +376,8 @@ struct Settings {
 	/// Saved messages shown again at startup
 	int iChatHistoryRestoreCount = 200;
 	bool bChatHistoryStoreImages = false;
+	/// Folder for the saved chat file, empty = the app data folder
+	QString qsChatHistoryDirectory = {};
 
 	QPoint qpTalkingUI_Position              = UNSPECIFIED_POSITION;
 	bool bShowTalkingUI                      = false;

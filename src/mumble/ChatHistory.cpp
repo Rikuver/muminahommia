@@ -2,6 +2,8 @@
 
 #include "ChatHistory.h"
 
+#include "Global.h"
+
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -14,7 +16,8 @@
 namespace ChatHistory {
 
 QString filePath() {
-	return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+	const QString &dir = Global::get().s.qsChatHistoryDirectory;
+	return (dir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) : dir)
 		   + QLatin1String("/muminahommia_channel_chat_history.jsonl");
 }
 

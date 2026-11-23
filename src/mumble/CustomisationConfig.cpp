@@ -5,6 +5,8 @@
 #include "ChatHistory.h"
 #include "Settings.h"
 
+#include <QtWidgets/QFileDialog>
+
 const QString CustomisationConfig::name = QLatin1String("CustomisationConfig");
 
 static ConfigWidget *CustomisationConfigNew(Settings &st) {
@@ -35,6 +37,7 @@ void CustomisationConfig::load(const Settings &r) {
 	qsbChatHistoryMax->setValue(r.iChatHistoryMaxMessages);
 	qsbChatHistoryRestore->setValue(r.iChatHistoryRestoreCount);
 	qcbChatHistoryImages->setChecked(r.bChatHistoryStoreImages);
+	qleChatHistoryDirectory->setText(r.qsChatHistoryDirectory);
 }
 
 void CustomisationConfig::save() const {
@@ -42,6 +45,15 @@ void CustomisationConfig::save() const {
 	s.iChatHistoryMaxMessages = qsbChatHistoryMax->value();
 	s.iChatHistoryRestoreCount = qsbChatHistoryRestore->value();
 	s.bChatHistoryStoreImages = qcbChatHistoryImages->isChecked();
+	s.qsChatHistoryDirectory  = qleChatHistoryDirectory->text().trimmed();
+}
+
+void CustomisationConfig::on_qpbChatHistoryBrowse_clicked() {
+	const QString dir = QFileDialog::getExistingDirectory(this, tr("Choose save folder"),
+														  qleChatHistoryDirectory->text());
+	if (!dir.isEmpty()) {
+		qleChatHistoryDirectory->setText(dir);
+	}
 }
 
 void CustomisationConfig::on_qpbClearChatHistory_clicked() {
