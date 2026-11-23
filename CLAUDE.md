@@ -16,7 +16,7 @@ Be lazy about the solution, never about reading the code first or about finishin
 
 - **Before writing:** read the code the change touches and trace the real flow. List every place the change must reach (callers, tests, config, `.ui` files, translations) and what it could break.
 - **Bug fixes:** grep every caller first, then fix the root cause once in shared code.
-- **No extras:** no unrequested features, abstractions or config options. Keep the diff as short as possible.
+- **No extras:** no unrequested features or abstractions. Config options only where they help the user (see Customisation settings below). Keep the diff as short as possible.
 - **Moving code:** keep its existing error handling and validation.
 - **Comments:** only the "why", in one line.
 - **Deliberate shortcuts:** add a `// shortcut: <the limit>, <when to upgrade>` comment.
@@ -26,6 +26,7 @@ Be lazy about the solution, never about reading the code first or about finishin
 ## Project notes
 
 - This is a personal fork of Mumble. Push customisations to `origin` (Rikuver/muminahommia) only; never open PRs upstream.
+- **Customisation settings:** every setting a customisation adds goes on the Customisation page in the settings dialog, not on the stock Mumble pages. When a customisation would benefit from user control (on/off, a limit, a path), add a setting for it there; keep defaults sensible so it works untouched.
 - The local build environment has Qt 5 only. Upstream master needs Qt 6, so test features on the 1.5.x line.
 - Subagents: `mumble-scout` (read-only lookups, Haiku) instead of general-purpose/Explore; `change-reviewer` (read-only review, Sonnet) before committing.
 - Building and running: skill `build-mumble-windows` (`.claude/skills/build-mumble-windows/SKILL.md`).
