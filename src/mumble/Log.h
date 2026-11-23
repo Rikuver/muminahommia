@@ -67,6 +67,7 @@ public slots:
 class ClientUser;
 class Channel;
 class LogMessage;
+class LogTextBrowser;
 
 class Log : public QObject {
 	friend class LogConfig;
@@ -125,6 +126,8 @@ protected:
 	static QVector< LogMessage > qvDeferredLogs;
 
 	QHash< MsgType, int > qmIgnore;
+	/// If set, log() writes into this view (e.g. a private message tab) instead of the main log
+	LogTextBrowser *m_targetLog = nullptr;
 	static const char *msgNames[];
 	static const char *colorClasses[];
 #ifndef USE_NO_TTS
@@ -158,6 +161,13 @@ public slots:
 			 const QString &overrideTTS = QString(), bool ignoreTTS = false);
 	/// Logs LogMessages that have been deferred so far
 	void processDeferredLogs();
+
+public:
+	/// Like log(), but writes the message into the given log view (e.g. a private message tab)
+	/// instead of the main chat log. Notifications, sounds and TTS behave exactly as with log().
+	void logToBrowser(LogTextBrowser *target, Log::MsgType mt, const QString &console,
+					  const QString &terse = QString(), bool ownMessage = false,
+					  const QString &overrideTTS = QString(), bool ignoreTTS = false);
 };
 
 class LogMessage {

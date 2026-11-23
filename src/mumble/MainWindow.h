@@ -11,8 +11,13 @@
 #include <QtNetwork/QAbstractSocket>
 #include <QtWidgets/QMainWindow>
 #include <QtWidgets/QSystemTrayIcon>
+#include <QtWidgets/QSlider>
+#include <QtWidgets/QLabel>
+#include <QtWidgets/QTabWidget>
+#include <QtCore/QHash>
 
 #include "CustomElements.h"
+#include "Log.h"
 #include "MUComboBox.h"
 #include "Mumble.pb.h"
 #include "MumbleProtocol.h"
@@ -44,6 +49,7 @@ class SearchDialog;
 }
 
 class MenuLabel;
+class ClientUser;
 class ListenerVolumeSlider;
 class UserLocalVolumeSlider;
 
@@ -149,6 +155,11 @@ public:
 	void storeState(bool minimalView);
 
 	void updateChatBar();
+
+	/// "System" tab: everything in the log except the chat messages people send
+	LogTextBrowser *qteSystemLog = nullptr;
+	/// Called by Log after a message was added to one of the log views (unread counters)
+	void logViewUpdated(LogTextBrowser *log, bool ownMessage);
 	void openTextMessageDialog(ClientUser *p);
 	void openUserLocalNicknameDialog(const ClientUser &p);
 
@@ -189,6 +200,31 @@ protected:
 	MUComboBox *qcbTransmitMode;
 	QAction *qaTransmitMode;
 	QAction *qaTransmitModeSeparator;
+
+	// Output volume slider on the icon toolbar
+	QWidget *qwOutputVolumeSpacer      = nullptr;
+	QSlider *qsOutputVolume            = nullptr;
+	QLabel *qlOutputVolume             = nullptr;
+	QAction *qaOutputVolumeSpacer      = nullptr;
+	QAction *qaOutputVolumeSlider      = nullptr;
+	QAction *qaOutputVolumeLabel       = nullptr;
+	void setupOutputVolumeSlider();
+	void updateOutputVolumeSlider();
+	void updateOutputVolumeLabel(int percent);
+
+	// Private message tabs (shown at the bottom of the chat log)
+	QTabWidget *qtwLogTabs = nullptr;
+	/// Conversation key (certificate hash, or name) -> log view of that private conversation
+	QHash< QString, LogTextBrowser * > qhPrivateLogs;
+	void setupLogTabs();
+	static QString privateChatKey(const ClientUser *cu);
+	LogTextBrowser *privateLogFor(ClientUser *cu, bool create);
+	LogTextBrowser *currentPrivateLog() const;
+	ClientUser *privateLogUser(LogTextBrowser *log) const;
+	void updatePrivateTabLabel(LogTextBrowser *log);
+	LogTextBrowser *createLogView(const QString &accessibleName);
+	void logPrivateMessage(ClientUser *cu, Log::MsgType mt, const QString &console, const QString &terse,
+						   bool ownMessage, const QString &overrideTTS = QString(), bool ignoreTTS = false);
 
 	Search::SearchDialog *m_searchDialog = nullptr;
 

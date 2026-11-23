@@ -712,6 +712,19 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 	}
 }
 
+void Log::logToBrowser(LogTextBrowser *target, Log::MsgType mt, const QString &console, const QString &terse,
+					   bool ownMessage, const QString &overrideTTS, bool ignoreTTS) {
+	if (!target || QThread::currentThread() != thread()) {
+		// Private tabs are only used from the main thread; fall back to the main log otherwise
+		log(mt, console, terse, ownMessage, overrideTTS, ignoreTTS);
+		return;
+	}
+	LogTextBrowser *previous = m_targetLog;
+	m_targetLog              = target;
+	log(mt, console, terse, ownMessage, overrideTTS, ignoreTTS);
+	m_targetLog = previous;
+}
+
 void Log::log(MsgType mt, const QString &console, const QString &terse, bool ownMessage, const QString &overrideTTS,
 			  bool ignoreTTS) {
 	if (QThread::currentThread() != thread()) {
@@ -738,7 +751,12 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 	// Message output on console
 	if ((flags & Settings::LogConsole)) {
-		QTextCursor tc = Global::get().mw->qteLog->textCursor();
+		// Chat messages go to the "Chat" tab, everything else (joins, leaves, server info, ...) to the
+		// "System" tab. logToBrowser() (private message tabs) overrides this.
+		MainWindow *mw       = Global::get().mw;
+		const bool isChat    = (mt == Log::TextMessage || mt == Log::PrivateTextMessage);
+		LogTextBrowser *tlog = m_targetLog ? m_targetLog : ((isChat || !mw->qteSystemLog) ? mw->qteLog : mw->qteSystemLog);
+		QTextCursor tc       = tlog->textCursor();
 
 		tc.movePosition(QTextCursor::End);
 
@@ -751,7 +769,6 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		qttf.setTopMargin(0);
 		qttf.setBottomMargin(msgMargin);
 
-		LogTextBrowser *tlog     = Global::get().mw->qteLog;
 		const int oldscrollvalue = tlog->getLogScroll();
 		// Restore the previous scroll position after inserting a new message
 		// if the message was not sent by the user AND the chat log is not
@@ -774,11 +791,18 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		// Set the line height of the leading blank line to zero
 		tc.setBlockFormat(bf);
 
-		if (qdDate != dt.date()) {
-			qdDate = dt.date();
+		// Each log view (main log, private tabs) tracks its own "date changed" state
+		const bool isMainLog = (tlog == Global::get().mw->qteLog);
+		const QDate lastDate = isMainLog ? qdDate : tlog->property("mumbleLogDate").toDate();
+		if (lastDate != dt.date()) {
+			if (isMainLog) {
+				qdDate = dt.date();
+			} else {
+				tlog->setProperty("mumbleLogDate", dt.date());
+			}
 			tc.insertFrame(qttf);
-			tc.insertHtml(
-				tr("[Date changed to %1]\n").arg(QLocale().toString(qdDate, QLocale::ShortFormat).toHtmlEscaped()));
+			tc.insertHtml(tr("[Date changed to %1]\n")
+							  .arg(QLocale().toString(dt.date(), QLocale::ShortFormat).toHtmlEscaped()));
 			tc.movePosition(QTextCursor::End);
 			tc.setBlockFormat(bf);
 		}
@@ -805,7 +829,7 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 		validHtml(console, &tc);
 		tc.movePosition(QTextCursor::End);
-		Global::get().mw->qteLog->setTextCursor(tc);
+		tlog->setTextCursor(tc);
 
 		// Set the line height of the trailing blank line to zero
 		tc.setBlockFormat(bf);
@@ -813,6 +837,8 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		if (restoreScroll) {
 			tlog->setLogScroll(oldscrollvalue);
 		}
+
+		mw->logViewUpdated(tlog, ownMessage);
 	}
 
 	if (!ownMessage) {

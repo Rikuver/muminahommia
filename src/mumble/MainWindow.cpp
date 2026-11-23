@@ -68,6 +68,7 @@
 
 #include <QAccessible>
 #include <QtCore/QStandardPaths>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QUrlQuery>
 #include <QtGui/QClipboard>
 #include <QtGui/QDesktopServices>
@@ -80,6 +81,7 @@
 #include <QtWidgets/QScrollBar>
 #include <QtWidgets/QToolTip>
 #include <QtWidgets/QWhatsThis>
+#include <QtGui/QMouseEvent>
 
 #include "widgets/SemanticSlider.h"
 
@@ -449,6 +451,8 @@ void MainWindow::setupGui() {
 	qteLog->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
 	qteLog->document()->setDefaultStyleSheet(qApp->styleSheet());
 
+	setupLogTabs();
+
 	pmModel = new UserModel(qtvUsers);
 	qtvUsers->setModel(pmModel);
 	qtvUsers->setRowHidden(0, QModelIndex(), true);
@@ -541,6 +545,8 @@ void MainWindow::setupGui() {
 
 	updateTransmitModeComboBox(Global::get().s.atTransmit);
 
+	setupOutputVolumeSlider();
+
 #ifdef Q_OS_WIN
 	setupView(false);
 #endif
@@ -574,6 +580,327 @@ void MainWindow::updateWindowTitle() {
 	}
 
 	setWindowTitle(title);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Private message tabs
+// ---------------------------------------------------------------------------------------------
+
+/// Hidden marker put in front of the "closed the private conversation" notice, so that this
+/// client can recognise it. Must be identical in MainWindow.cpp and Messages.cpp.
+#define MUMBLE_PM_CLOSED_MARKER "<!--mumble-pm-closed-->"
+
+namespace {
+/// Closes a tab when it is clicked with the middle mouse button (scroll wheel click).
+class TabMiddleClickCloser : public QObject {
+public:
+	explicit TabMiddleClickCloser(QTabWidget *tabs) : QObject(tabs), m_tabs(tabs) {}
+
+protected:
+	bool eventFilter(QObject *obj, QEvent *event) override {
+		if (event->type() == QEvent::MouseButtonRelease) {
+			QMouseEvent *me = static_cast< QMouseEvent * >(event);
+			if (me->button() == Qt::MiddleButton) {
+				const int index = m_tabs->tabBar()->tabAt(me->pos());
+				if (index >= 0) {
+					// The handler ignores the main "Chat" tab
+					emit m_tabs->tabCloseRequested(index);
+					return true;
+				}
+			}
+		}
+		return QObject::eventFilter(obj, event);
+	}
+
+private:
+	QTabWidget *m_tabs;
+};
+} // namespace
+
+void MainWindow::setupLogTabs() {
+	qtwLogTabs = new QTabWidget(qdwLog);
+	qtwLogTabs->setObjectName(QLatin1String("qtwLogTabs"));
+	qtwLogTabs->setTabPosition(QTabWidget::South);
+	qtwLogTabs->setDocumentMode(true);
+	qtwLogTabs->setTabsClosable(true);
+	qtwLogTabs->setMovable(true);
+	qtwLogTabs->setTabBarAutoHide(false);
+
+	// Permanent tabs (can't be closed, but can be dragged around):
+	//   [System/server] [Chat] [private tabs...]
+	qteSystemLog = createLogView(tr("System messages"));
+	qteSystemLog->setObjectName(QLatin1String("qteSystemLog"));
+	qtwLogTabs->addTab(qteSystemLog, QString());
+	qtwLogTabs->addTab(qteLog, tr("Chat")); // the existing main log becomes the "Chat" tab
+	for (int i = 0; i < 2; i++) {
+		qtwLogTabs->tabBar()->setTabButton(i, QTabBar::RightSide, nullptr);
+		qtwLogTabs->tabBar()->setTabButton(i, QTabBar::LeftSide, nullptr);
+	}
+	qdwLog->setWidget(qtwLogTabs);
+	updatePrivateTabLabel(qteLog);
+	updatePrivateTabLabel(qteSystemLog);
+
+	// The System tab is leftmost, but Chat is the one shown on startup
+	qtwLogTabs->setCurrentWidget(qteLog);
+
+	// Middle-click (scroll wheel click) on a private tab closes it
+	qtwLogTabs->tabBar()->installEventFilter(new TabMiddleClickCloser(qtwLogTabs));
+
+	connect(qtwLogTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
+		LogTextBrowser *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->widget(index));
+		if (!log || log == qteLog || log == qteSystemLog) {
+			return; // "Chat" and "System" can't be closed
+		}
+
+		// Let the other person know that the private conversation was closed
+		ClientUser *other = privateLogUser(log);
+		ClientUser *self  = ClientUser::get(Global::get().uiSession);
+		if (other && self && Global::get().sh && Global::get().uiSession != 0) {
+			const QString notice = QLatin1String(MUMBLE_PM_CLOSED_MARKER)
+								   + tr("<i>%1 closed the private conversation.</i>").arg(self->qsName.toHtmlEscaped());
+			Global::get().sh->sendUserTextMessage(other->uiSession, notice);
+		}
+
+		qhPrivateLogs.remove(log->property("pmKey").toString());
+		qtwLogTabs->removeTab(index);
+		log->deleteLater();
+	});
+
+	connect(qtwLogTabs, &QTabWidget::currentChanged, this, [this](int) {
+		if (LogTextBrowser *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->currentWidget())) {
+			log->setProperty("pmUnread", 0);
+			updatePrivateTabLabel(log);
+		}
+		updateChatBar();
+	});
+}
+
+QString MainWindow::privateChatKey(const ClientUser *cu) {
+	if (!cu) {
+		return QString();
+	}
+	return cu->qsHash.isEmpty() ? QLatin1String("name:") + cu->qsName : QLatin1String("hash:") + cu->qsHash;
+}
+
+LogTextBrowser *MainWindow::createLogView(const QString &accessibleName) {
+	LogTextBrowser *log = new LogTextBrowser(qtwLogTabs);
+	log->setOpenLinks(false);
+	log->setContextMenuPolicy(Qt::CustomContextMenu);
+	log->setFrameStyle(qteLog->frameStyle());
+	log->setAccessibleName(accessibleName);
+
+	LogDocument *ld = new LogDocument(log);
+	log->setDocument(ld);
+	log->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
+	log->document()->setDefaultStyleSheet(qApp->styleSheet());
+
+	log->setProperty("pmUnread", 0);
+	log->setProperty("mumbleLogDate", QDate::currentDate());
+
+	// Same link / context menu handling as the main log
+	connect(log, SIGNAL(customContextMenuRequested(const QPoint &)), this,
+			SLOT(on_qteLog_customContextMenuRequested(const QPoint &)));
+	connect(log, SIGNAL(anchorClicked(const QUrl &)), this, SLOT(on_qteLog_anchorClicked(const QUrl &)));
+	connect(log, SIGNAL(highlighted(const QUrl &)), this, SLOT(on_qteLog_highlighted(const QUrl &)));
+
+	return log;
+}
+
+void MainWindow::logViewUpdated(LogTextBrowser *log, bool ownMessage) {
+	if (!qtwLogTabs || !log) {
+		return;
+	}
+	if (log == qteSystemLog) {
+		// Keep the System tab named after the server; no unread counter (it would never stop counting)
+		updatePrivateTabLabel(log);
+		return;
+	}
+	if (!ownMessage && qtwLogTabs->currentWidget() != log) {
+		log->setProperty("pmUnread", log->property("pmUnread").toInt() + 1);
+		updatePrivateTabLabel(log);
+	}
+}
+
+LogTextBrowser *MainWindow::privateLogFor(ClientUser *cu, bool create) {
+	if (!cu || !qtwLogTabs) {
+		return nullptr;
+	}
+	const QString key = privateChatKey(cu);
+
+	LogTextBrowser *log = qhPrivateLogs.value(key, nullptr);
+	if (log) {
+		// Keep the tab label in sync if the user renamed themselves
+		if (log->property("pmName").toString() != cu->qsName) {
+			log->setProperty("pmName", cu->qsName);
+			updatePrivateTabLabel(log);
+		}
+		return log;
+	}
+	if (!create) {
+		return nullptr;
+	}
+
+	log = createLogView(tr("Private messages with %1").arg(cu->qsName));
+	log->setObjectName(QLatin1String("qtePrivateLog"));
+	log->setProperty("pmKey", key);
+	log->setProperty("pmName", cu->qsName);
+
+	qhPrivateLogs.insert(key, log);
+	qtwLogTabs->addTab(log, QString());
+	updatePrivateTabLabel(log);
+
+	return log;
+}
+
+LogTextBrowser *MainWindow::currentPrivateLog() const {
+	if (!qtwLogTabs) {
+		return nullptr;
+	}
+	LogTextBrowser *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->currentWidget());
+	return (log && log != qteLog && log != qteSystemLog) ? log : nullptr;
+}
+
+ClientUser *MainWindow::privateLogUser(LogTextBrowser *log) const {
+	if (!log) {
+		return nullptr;
+	}
+	const QString key = log->property("pmKey").toString();
+
+	QReadLocker lock(&ClientUser::c_qrwlUsers);
+	for (ClientUser *cu : ClientUser::c_qmUsers) {
+		if (cu && cu->uiSession != Global::get().uiSession && privateChatKey(cu) == key) {
+			return cu;
+		}
+	}
+	return nullptr;
+}
+
+void MainWindow::updatePrivateTabLabel(LogTextBrowser *log) {
+	const int index = qtwLogTabs ? qtwLogTabs->indexOf(log) : -1;
+	if (index < 0) {
+		return;
+	}
+	QString label;
+	if (log == qteLog) {
+		label = tr("Chat");
+	} else if (log == qteSystemLog) {
+		// Named after the server we're on, e.g. "psygoa.org"
+		QString host;
+		if (Global::get().sh) {
+			unsigned short port = 0;
+			QString user, pw;
+			Global::get().sh->getConnectionInfo(host, port, user, pw);
+		}
+		label = host.isEmpty() ? tr("System") : host;
+	} else {
+		label = log->property("pmName").toString();
+	}
+	const int unread = log->property("pmUnread").toInt();
+	if (unread > 0) {
+		label += QString::fromLatin1(" (%1)").arg(unread);
+	}
+	// '&' would otherwise be shown as a keyboard mnemonic
+	qtwLogTabs->setTabText(index, label.replace(QLatin1Char('&'), QLatin1String("&&")));
+	if (log == qteLog) {
+		qtwLogTabs->setTabToolTip(index, tr("Text messages sent in the channel"));
+	} else if (log == qteSystemLog) {
+		qtwLogTabs->setTabToolTip(index, tr("Server and system messages (joins, leaves, connection info, ...)"));
+	} else {
+		qtwLogTabs->setTabToolTip(index, tr("Private messages with %1").arg(log->property("pmName").toString()));
+	}
+}
+
+void MainWindow::logPrivateMessage(ClientUser *cu, Log::MsgType mt, const QString &console, const QString &terse,
+								   bool ownMessage, const QString &overrideTTS, bool ignoreTTS) {
+	LogTextBrowser *log = privateLogFor(cu, true);
+	if (!log) {
+		Global::get().l->log(mt, console, terse, ownMessage, overrideTTS, ignoreTTS);
+		return;
+	}
+
+	// Unread counter is updated by logViewUpdated()
+	Global::get().l->logToBrowser(log, mt, console, terse, ownMessage, overrideTTS, ignoreTTS);
+}
+
+/// Name of the local user, formatted for the chat log exactly like other users' names,
+/// so own channel messages read "<Nickname>: message" instead of "To <channel>: message".
+static QString ownChatName() {
+	ClientUser *self = ClientUser::get(Global::get().uiSession);
+	return self ? Log::formatClientUser(self, Log::Source) : QStringLiteral("Me");
+}
+
+void MainWindow::setupOutputVolumeSlider() {
+	qsOutputVolume = new QSlider(Qt::Horizontal, qtIconToolbar);
+	qsOutputVolume->setObjectName(QLatin1String("qsOutputVolume"));
+	qsOutputVolume->setRange(0, 200); // Same range as Settings -> Audio Output -> Output volume
+	qsOutputVolume->setSingleStep(1);
+	qsOutputVolume->setPageStep(10);
+	// Expanding: the slider stretches over all free toolbar space, up to the other buttons.
+	qsOutputVolume->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	qsOutputVolume->setMinimumWidth(80);
+	qsOutputVolume->setFocusPolicy(Qt::NoFocus);
+	qsOutputVolume->setToolTip(tr("Output volume"));
+	qsOutputVolume->setWhatsThis(tr("Adjusts the overall volume of incoming speech (Audio Output Volume). "
+									"Values above 100% amplify the audio and may cause distortion."));
+	qsOutputVolume->setAccessibleName(tr("Output volume"));
+
+	qlOutputVolume = new QLabel(qtIconToolbar);
+	qlOutputVolume->setObjectName(QLatin1String("qlOutputVolume"));
+	qlOutputVolume->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+	qlOutputVolume->setMinimumWidth(qlOutputVolume->fontMetrics().boundingRect(QLatin1String("200 %")).width() + 6);
+	qlOutputVolume->setToolTip(tr("Output volume"));
+
+	qaOutputVolumeSlider = qtIconToolbar->addWidget(qsOutputVolume);
+	qaOutputVolumeLabel  = qtIconToolbar->addWidget(qlOutputVolume);
+
+	connect(qsOutputVolume, &QSlider::valueChanged, this, [this](int value) {
+		// AudioOutput reads this value on every mix, so the change is heard immediately.
+		// It is written to disk together with the other settings when Mumble exits.
+		Global::get().s.fVolume = static_cast< float >(value) / 100.0f;
+		updateOutputVolumeLabel(value);
+	});
+
+	// Keep it usable if the toolbar gets docked to the left/right side in custom layout.
+	connect(qtIconToolbar, &QToolBar::orientationChanged, this, [this](Qt::Orientation orientation) {
+		qsOutputVolume->setOrientation(orientation);
+		if (orientation == Qt::Horizontal) {
+			qsOutputVolume->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+			qsOutputVolume->setMinimumSize(80, 0);
+		} else {
+			qsOutputVolume->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+			qsOutputVolume->setMinimumSize(0, 80);
+		}
+	});
+
+	updateOutputVolumeSlider();
+}
+
+void MainWindow::updateOutputVolumeSlider() {
+	if (!qsOutputVolume) {
+		return;
+	}
+
+	const int percent = std::max(0, std::min(200, static_cast< int >(Global::get().s.fVolume * 100.0f + 0.5f)));
+
+	const QSignalBlocker blocker(qsOutputVolume);
+	qsOutputVolume->setValue(percent);
+	updateOutputVolumeLabel(percent);
+}
+
+void MainWindow::updateOutputVolumeLabel(int percent) {
+	if (!qlOutputVolume) {
+		return;
+	}
+
+	QPalette pal = qlOutputVolume->palette();
+	pal.setColor(qlOutputVolume->foregroundRole(),
+				 percent > 100 ? QColor(Qt::red) : qtIconToolbar->palette().color(QPalette::WindowText));
+	qlOutputVolume->setPalette(pal);
+	qlOutputVolume->setText(tr("%1 %").arg(percent));
+
+	const QString tip = tr("Output volume: %1 %").arg(percent);
+	qsOutputVolume->setToolTip(tip);
+	qlOutputVolume->setToolTip(tip);
 }
 
 void MainWindow::updateToolbar() {
@@ -1029,22 +1356,28 @@ void MainWindow::on_qtvUsers_customContextMenuRequested(const QPoint &mpos, bool
 }
 
 void MainWindow::on_qteLog_customContextMenuRequested(const QPoint &mpos) {
-	QString link = qteLog->anchorAt(mpos);
+	// Also used by the private message tabs
+	LogTextBrowser *log = qobject_cast< LogTextBrowser * >(sender());
+	if (!log) {
+		log = qteLog;
+	}
+
+	QString link = log->anchorAt(mpos);
 	if (!link.isEmpty()) {
 		QUrl l(link);
 
-		if (handleSpecialContextMenu(l, qteLog->mapToGlobal(mpos)))
+		if (handleSpecialContextMenu(l, log->mapToGlobal(mpos)))
 			return;
 	}
 
 	QPoint contentPosition =
 		QPoint(QApplication::isRightToLeft()
-				   ? (qteLog->horizontalScrollBar()->maximum() - qteLog->horizontalScrollBar()->value())
-				   : qteLog->horizontalScrollBar()->value(),
-			   qteLog->verticalScrollBar()->value());
-	QMenu *menu = qteLog->createStandardContextMenu(mpos + contentPosition);
+				   ? (log->horizontalScrollBar()->maximum() - log->horizontalScrollBar()->value())
+				   : log->horizontalScrollBar()->value(),
+			   log->verticalScrollBar()->value());
+	QMenu *menu = log->createStandardContextMenu(mpos + contentPosition);
 
-	QTextCursor cursor  = qteLog->cursorForPosition(mpos);
+	QTextCursor cursor  = log->cursorForPosition(mpos);
 	QTextCharFormat fmt = cursor.charFormat();
 
 	// Work around imprecise cursor image identification
@@ -1066,8 +1399,8 @@ void MainWindow::on_qteLog_customContextMenuRequested(const QPoint &mpos) {
 	}
 
 	menu->addSeparator();
-	menu->addAction(tr("Clear"), qteLog, SLOT(clear(void)));
-	menu->exec(qteLog->mapToGlobal(mpos));
+	menu->addAction(tr("Clear"), log, SLOT(clear(void)));
+	menu->exec(log->mapToGlobal(mpos));
 	delete menu;
 }
 
@@ -1083,7 +1416,8 @@ void MainWindow::saveImageAs() {
 	}
 
 	QString resName = qtcSaveImageCursor.charFormat().toImageFormat().name();
-	QVariant res    = qteLog->document()->resource(QTextDocument::ImageResource, resName);
+	QTextDocument *imageDoc = qtcSaveImageCursor.document() ? qtcSaveImageCursor.document() : qteLog->document();
+	QVariant res            = imageDoc->resource(QTextDocument::ImageResource, resName);
 	QImage img      = res.value< QImage >();
 	bool ok         = img.save(fname);
 	if (!ok) {
@@ -2068,9 +2402,9 @@ void MainWindow::openTextMessageDialog(ClientUser *p) {
 
 		if (!msg.isEmpty()) {
 			Global::get().sh->sendUserTextMessage(p->uiSession, msg);
-			Global::get().l->log(Log::TextMessage,
-								 tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), texm->message()),
-								 tr("Message to %1").arg(p->qsName), true);
+			logPrivateMessage(p, Log::TextMessage, tr("%1: %2").arg(ownChatName(), texm->message()),
+							  tr("Message to %1").arg(p->qsName), true);
+			qtwLogTabs->setCurrentWidget(privateLogFor(p, true));
 		}
 	}
 	delete texm;
@@ -2196,23 +2530,31 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 	if (Global::get().uiSession == 0)
 		return; // Check if text & connection is available
 
-	ClientUser *p = pmModel->getUser(qtvUsers->currentIndex());
-	Channel *c    = pmModel->getChannel(qtvUsers->currentIndex());
-
-	if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
-		// Channel message
-		if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
-			c = ClientUser::get(Global::get().uiSession)->cChannel;
-
-		Global::get().sh->sendChannelTextMessage(c->iId, qsMessage, false);
-		Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), qsMessage),
-							 tr("Message to channel %1").arg(c->qsName), true);
-	} else {
-		// User message
-		Global::get().sh->sendUserTextMessage(p->uiSession, qsMessage);
-		Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), qsMessage),
-							 tr("Message to %1").arg(p->qsName), true);
+	// A private message tab is open: the chat bar replies to that user
+	if (LogTextBrowser *pmLog = currentPrivateLog()) {
+		ClientUser *target = privateLogUser(pmLog);
+		if (target) {
+			Global::get().sh->sendUserTextMessage(target->uiSession, qsMessage);
+			logPrivateMessage(target, Log::TextMessage, tr("%1: %2").arg(ownChatName(), qsMessage),
+							  tr("Message to %1").arg(target->qsName), true);
+		} else {
+			Global::get().l->logToBrowser(
+				pmLog, Log::Information,
+				tr("%1 is not connected. The message was not sent.")
+					.arg(pmLog->property("pmName").toString().toHtmlEscaped()));
+		}
+		return;
 	}
+
+	// Channel message. Private messages are only sent from a private tab (see above), so a user
+	// selected in the user list never turns the chat bar into a private message.
+	Channel *c = pmModel->getChannel(qtvUsers->currentIndex());
+	if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
+		c = ClientUser::get(Global::get().uiSession)->cChannel;
+
+	Global::get().sh->sendChannelTextMessage(c->iId, qsMessage, false);
+	Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), qsMessage),
+						 tr("Message to channel %1").arg(c->qsName), true);
 }
 
 /// Handles Backtab/Shift-Tab for qteChat, which allows
@@ -2548,7 +2890,7 @@ void MainWindow::on_qaChannelSendMessage_triggered() {
 			Global::get().l->log(Log::TextMessage, tr("To %1 (Tree): %2").arg(Log::formatChannel(c), texm->message()),
 								 tr("Message to tree %1").arg(c->qsName), true);
 		else
-			Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), texm->message()),
+			Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), texm->message()),
 								 tr("Message to channel %1").arg(c->qsName), true);
 	}
 	delete texm;
@@ -2907,6 +3249,7 @@ void MainWindow::on_VolumeUp_triggered(bool down, QVariant) {
 			vol = 2.0f;
 		}
 		Global::get().s.fVolume = vol;
+		updateOutputVolumeSlider();
 	}
 }
 
@@ -2917,6 +3260,7 @@ void MainWindow::on_VolumeDown_triggered(bool down, QVariant) {
 			vol = 0.0f;
 		}
 		Global::get().s.fVolume = vol;
+		updateOutputVolumeSlider();
 	}
 }
 
@@ -3230,7 +3574,7 @@ void MainWindow::on_gsSendTextMessage_triggered(bool down, QVariant scdata) {
 
 	Channel *c = ClientUser::get(Global::get().uiSession)->cChannel;
 	Global::get().sh->sendChannelTextMessage(c->iId, qsText, false);
-	Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), qsText),
+	Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), qsText),
 						 tr("Message to channel %1").arg(c->qsName), true);
 }
 
@@ -3814,21 +4158,23 @@ void MainWindow::qtvUserCurrentChanged(const QModelIndex &, const QModelIndex &)
 }
 
 void MainWindow::updateChatBar() {
-	User *p    = pmModel->getUser(qtvUsers->currentIndex());
 	Channel *c = pmModel->getChannel(qtvUsers->currentIndex());
+
+	LogTextBrowser *pmLog = currentPrivateLog();
 
 	if (Global::get().uiSession == 0) {
 		qteChat->setDefaultText(tr("<center>Not connected</center>"), true);
-	} else if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
-		// Channel tree target
+	} else if (pmLog) {
+		// Private message tab target
+		qteChat->setDefaultText(tr("<center>Type private message to '%1' here</center>")
+									.arg(pmLog->property("pmName").toString().toHtmlEscaped()));
+	} else {
+		// Channel tree target (a selected user never makes the chat bar a private message)
 		if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
 			c = ClientUser::get(Global::get().uiSession)->cChannel;
 
 		qteChat->setDefaultText(
 			tr("<center>Type message to channel '%1' here</center>").arg(c->qsName.toHtmlEscaped()));
-	} else {
-		// User target
-		qteChat->setDefaultText(tr("<center>Type message to user '%1' here</center>").arg(p->qsName.toHtmlEscaped()));
 	}
 
 	updateMenuPermissions();
@@ -4164,8 +4510,12 @@ void MainWindow::openConfigDialog() {
 	Global::get().inConfigUI = true;
 
 	QObject::connect(dlg, &ConfigDialog::settingsAccepted, Global::get().talkingUI, &TalkingUI::on_settingsChanged);
+	QObject::connect(dlg, &ConfigDialog::settingsAccepted, this, &MainWindow::updateOutputVolumeSlider);
 
-	if (dlg->exec() == QDialog::Accepted) {
+	const int configResult = dlg->exec();
+	updateOutputVolumeSlider();
+
+	if (configResult == QDialog::Accepted) {
 		setupView(false);
 		updateTransmitModeComboBox(Global::get().s.atTransmit);
 		updateTrayIcon();

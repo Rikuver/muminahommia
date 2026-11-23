@@ -998,6 +998,10 @@ void MainWindow::msgChannelRemove(const MumbleProto::ChannelRemove &msg) {
 /// the user - which is what this function does.
 ///
 /// @param msg The message object that contains information about the received text message
+/// Hidden marker put in front of the "closed the private conversation" notice, so that this
+/// client can recognise it. Must be identical in MainWindow.cpp and Messages.cpp.
+#define MUMBLE_PM_CLOSED_MARKER "<!--mumble-pm-closed-->"
+
 void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	ACTOR_INIT;
 	QString target;
@@ -1009,11 +1013,13 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	const QString &plainName = pSrc ? pSrc->qsName : tr("Server", "message from");
 	const QString &name      = pSrc ? Log::formatClientUser(pSrc, Log::Source) : tr("Server", "message from");
 	bool privateMessage      = false;
+	bool channelMessage      = false;
 
 	if (msg.tree_id_size() > 0) {
 		target += tr("Tree");
 	} else if (msg.channel_id_size() > 0) {
 		target += tr("Channel");
+		channelMessage = true;
 	} else if (msg.session_size() > 0) {
 		target += tr("Private");
 		privateMessage = true;
@@ -1032,7 +1038,27 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 		return tr("%1: %2").arg(prefixTTS).arg(plainMessage);
 	}();
 
-	const QString prefixMessage = target.isEmpty() ? name : tr("(%1) %2").arg(target).arg(name);
+	// Channel and private messages are shown as "<Nickname>: message" (no "(Channel)"/"(Private)" prefix).
+	const QString prefixMessage =
+		(target.isEmpty() || channelMessage || privateMessage) ? name : tr("(%1) %2").arg(target).arg(name);
+
+	// The other person closed our private conversation: show a short notice in their tab
+	// (if we still have it open), but don't open a new tab just for that.
+	if (privateMessage && pSrc && u8(msg.message()).contains(QLatin1String(MUMBLE_PM_CLOSED_MARKER))) {
+		if (LogTextBrowser *pmLog = privateLogFor(pSrc, false)) {
+			// (unread counter is updated by logViewUpdated())
+			Global::get().l->logToBrowser(pmLog, Log::Information,
+										  tr("%1 closed the private conversation.").arg(name));
+		}
+		return;
+	}
+
+	// Private messages go only into that user's own tab, never into the main log
+	if (privateMessage && pSrc) {
+		logPrivateMessage(pSrc, Log::PrivateTextMessage, tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())),
+						  tr("Message from %1").arg(plainName), false, overrideTTS, pSrc->bLocalIgnoreTTS);
+		return;
+	}
 
 	Global::get().l->log(privateMessage ? Log::PrivateTextMessage : Log::TextMessage,
 						 tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())), tr("Message from %1").arg(plainName),
