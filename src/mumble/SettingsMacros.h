@@ -174,7 +174,11 @@
 	PROCESS(ui, MAX_LOG_LENGTH_KEY, iMaxLogBlocks)                               \
 	PROCESS(ui, USE_24H_CLOCK_KEY, bLog24HourClock)                              \
 	PROCESS(ui, LOG_MESSAGE_MARGINS_KEY, iChatMessageMargins)                    \
-	PROCESS(ui, DISABLE_PUBLIC_SERVER_LIST_KEY, bDisablePublicList)
+	PROCESS(ui, DISABLE_PUBLIC_SERVER_LIST_KEY, bDisablePublicList)              \
+	PROCESS(ui, CHAT_HISTORY_ENABLED_KEY, bChatHistoryEnabled)                   \
+	PROCESS(ui, CHAT_HISTORY_MAX_MESSAGES_KEY, iChatHistoryMaxMessages)          \
+	PROCESS(ui, CHAT_HISTORY_RESTORE_COUNT_KEY, iChatHistoryRestoreCount)        \
+	PROCESS(ui, CHAT_HISTORY_STORE_IMAGES_KEY, bChatHistoryStoreImages)
 
 
 #define UPDATE_SETTINGS                                         \

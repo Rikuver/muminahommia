@@ -28,3 +28,4 @@ Be lazy about the solution, never about reading the code first or about finishin
 - This is a personal fork of Mumble. Push customisations to `origin` (Rikuver/muminahommia) only; never open PRs upstream.
 - The local build environment has Qt 5 only. Upstream master needs Qt 6, so test features on the 1.5.x line.
 - Design notes: `docs/muminahommia_poke_and_chat_tabs_design.md`.
+- Persistent chat log and Customisation settings page: `docs/muminahommia_persistent_chat_log_and_customisation_settings_investigation.md`.

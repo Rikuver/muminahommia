@@ -369,6 +369,14 @@ struct Settings {
 	bool bLog24HourClock    = true;
 	int iChatMessageMargins = 3;
 
+	/// Saves channel chat to disk so it is restored after a restart (see ChatHistory.h)
+	bool bChatHistoryEnabled     = false;
+	/// Saved messages kept on disk, 0 = unlimited
+	int iChatHistoryMaxMessages  = 2000;
+	/// Saved messages shown again at startup
+	int iChatHistoryRestoreCount = 200;
+	bool bChatHistoryStoreImages = false;
+
 	QPoint qpTalkingUI_Position              = UNSPECIFIED_POSITION;
 	bool bShowTalkingUI                      = false;
 	bool talkingUI_UsersAlwaysVisible        = false;

@@ -205,6 +205,10 @@ const SettingsKey MAX_LOG_LENGTH_KEY                   = { "max_log_length" };
 const SettingsKey USE_24H_CLOCK_KEY                    = { "use_24h_clock_format" };
 const SettingsKey LOG_MESSAGE_MARGINS_KEY              = { "log_message_margins" };
 const SettingsKey DISABLE_PUBLIC_SERVER_LIST_KEY       = { "disable_public_server_list" };
+const SettingsKey CHAT_HISTORY_ENABLED_KEY             = { "chat_history_enabled" };
+const SettingsKey CHAT_HISTORY_MAX_MESSAGES_KEY        = { "chat_history_max_messages" };
+const SettingsKey CHAT_HISTORY_RESTORE_COUNT_KEY       = { "chat_history_restore_count" };
+const SettingsKey CHAT_HISTORY_STORE_IMAGES_KEY        = { "chat_history_store_images" };
 
 // Last connection
 const SettingsKey LAST_USERNAME_KEY    = { "username" };

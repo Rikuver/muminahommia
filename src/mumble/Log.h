@@ -159,6 +159,8 @@ public slots:
 			 const QString &overrideTTS = QString(), bool ignoreTTS = false, unsigned int privateSession = 0);
 	/// Logs LogMessages that have been deferred so far
 	void processDeferredLogs();
+	/// Shows the saved channel chat (see ChatHistory.h) in the main log. Call once at startup.
+	void restoreChatHistory();
 };
 
 class LogMessage {

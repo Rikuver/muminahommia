@@ -710,6 +710,7 @@ int main(int argc, char **argv) {
 	// before the MainWindow one, does not make sense. if you need logging before this
 	// point, use Log::logOrDefer()
 	Global::get().l = new Log();
+	Global::get().l->restoreChatHistory();
 	Global::get().l->processDeferredLogs();
 
 #ifdef Q_OS_WIN

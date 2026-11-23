@@ -10,6 +10,7 @@
 #include "AudioOutputSample.h"
 #include "AudioOutputToken.h"
 #include "Channel.h"
+#include "ChatHistory.h"
 #include "MainWindow.h"
 #include "NetworkConfig.h"
 #include "RichTextEditor.h"
@@ -712,6 +713,62 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 	}
 }
 
+void Log::restoreChatHistory() {
+	const Settings &s = Global::get().s;
+	if (!s.bChatHistoryEnabled) {
+		return;
+	}
+
+	const QVector< ChatHistory::Entry > entries = ChatHistory::load(s.iChatHistoryRestoreCount, s.iChatHistoryMaxMessages);
+	if (entries.isEmpty()) {
+		return;
+	}
+
+	// Mirrors the layout code in log(), minus scrolling and notifications
+	LogTextBrowser *tlog = Global::get().mw->qteLog;
+	QTextCursor tc       = tlog->textCursor();
+
+	QTextFrameFormat qttf;
+	qttf.setTopMargin(0);
+	qttf.setBottomMargin(s.iChatMessageMargins);
+
+	QTextBlockFormat bf;
+	bf.setLineHeight(0, QTextBlockFormat::FixedHeight);
+	bf.setTopMargin(0);
+	bf.setBottomMargin(0);
+
+	// Every entry lives in its own frame, like in log()
+	const auto beginFrame = [&]() {
+		tc.movePosition(QTextCursor::End);
+		tc.setBlockFormat(bf);
+		tc.insertFrame(qttf);
+	};
+	const auto endFrame = [&]() {
+		tc.movePosition(QTextCursor::End);
+		tc.setBlockFormat(bf);
+	};
+
+	for (const ChatHistory::Entry &e : entries) {
+		if (qdDate != e.time.date()) {
+			qdDate = e.time.date();
+			beginFrame();
+			tc.insertHtml(
+				tr("[Date changed to %1]\n").arg(QLocale().toString(qdDate, QLocale::ShortFormat).toHtmlEscaped()));
+			endFrame();
+		}
+		const QString timeString =
+			e.time.time().toString(QLatin1String(s.bLog24HourClock ? "HH:mm:ss" : "hh:mm:ss AP"));
+		beginFrame();
+		tc.insertHtml(Log::msgColor(QString::fromLatin1("[%1] ").arg(timeString.toHtmlEscaped()), Log::Time));
+		validHtml(e.html, &tc);
+		endFrame();
+	}
+	beginFrame();
+	tc.insertHtml(tr("[Saved chat history ends here]\n"));
+	endFrame();
+	tlog->setTextCursor(tc);
+}
+
 void Log::log(MsgType mt, const QString &console, const QString &terse, bool ownMessage, const QString &overrideTTS,
 			  bool ignoreTTS, unsigned int privateSession) {
 	if (QThread::currentThread() != thread()) {
@@ -814,6 +871,10 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		validHtml(console, &tc);
 		tc.movePosition(QTextCursor::End);
 		tlog->setTextCursor(tc);
+
+		if (mt == TextMessage && !privateSession && Global::get().s.bChatHistoryEnabled) {
+			ChatHistory::append(dt, console, Global::get().s.bChatHistoryStoreImages);
+		}
 
 		// Set the line height of the trailing blank line to zero
 		tc.setBlockFormat(bf);
