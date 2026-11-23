@@ -1002,6 +1002,9 @@ void MainWindow::msgChannelRemove(const MumbleProto::ChannelRemove &msg) {
 /// client can recognise it. Must be identical in MainWindow.cpp and Messages.cpp.
 #define MUMBLE_PM_CLOSED_MARKER "<!--mumble-pm-closed-->"
 
+// Defined in MainWindow.cpp: received chat messages are shown without any formatting
+QString plainChatHtml(const QString &html);
+
 void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	ACTOR_INIT;
 	QString target;
@@ -1053,15 +1056,18 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 		return;
 	}
 
+	// Shown without any formatting, the same way as our own messages
+	const QString plainMessage = plainChatHtml(u8(msg.message()));
+
 	// Private messages go only into that user's own tab, never into the main log
 	if (privateMessage && pSrc) {
-		logPrivateMessage(pSrc, Log::PrivateTextMessage, tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())),
+		logPrivateMessage(pSrc, Log::PrivateTextMessage, tr("%1: %2").arg(prefixMessage).arg(plainMessage),
 						  tr("Message from %1").arg(plainName), false, overrideTTS, pSrc->bLocalIgnoreTTS);
 		return;
 	}
 
 	Global::get().l->log(privateMessage ? Log::PrivateTextMessage : Log::TextMessage,
-						 tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())), tr("Message from %1").arg(plainName),
+						 tr("%1: %2").arg(prefixMessage).arg(plainMessage), tr("Message from %1").arg(plainName),
 						 false, overrideTTS, pSrc ? pSrc->bLocalIgnoreTTS : false);
 }
 

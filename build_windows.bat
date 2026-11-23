@@ -20,6 +20,10 @@ set "ROOT=%ROOT:~0,-1%"
 set "ENV_STORE=%ROOT%\mumble-build-env"
 set "ENV_DIR=%ENV_STORE%\%ENV_NAME%"
 set "BUILD=%ROOT%\build"
+:: Clean, ready-to-run copy of the finished build (only the files Mumble needs) + a zip of it
+set "DIST_NAME=Mumble-VolumeSlider"
+set "DIST=%ROOT%\dist\%DIST_NAME%"
+set "DIST_ZIP=%ROOT%\dist\%DIST_NAME%.zip"
 
 echo.
 echo === Mumble build (Windows x64, Release) ===
@@ -27,7 +31,7 @@ echo Source: %ROOT%
 echo.
 
 :: --- 1. Visual Studio ------------------------------------------------------
-echo [1/5] Looking for Visual Studio with C++ tools...
+echo [1/6] Looking for Visual Studio with C++ tools...
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" goto :no_vs
 set "VSPATH="
@@ -37,13 +41,13 @@ if not exist "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" goto :no_vs
 echo       Found: %VSPATH%
 
 :: --- 2. Python 3 -----------------------------------------------------------
-echo [2/5] Looking for Python 3...
+echo [2/6] Looking for Python 3...
 python -c "import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)" >nul 2>&1
 if errorlevel 1 goto :no_python
 for /f "delims=" %%v in ('python --version 2^>^&1') do echo       Found: %%v
 
 :: --- 3. Build environment (dependencies) -----------------------------------
-echo [3/5] Checking the build environment...
+echo [3/6] Checking the build environment...
 if exist "%ENV_DIR%\scripts\buildsystems\vcpkg.cmake" goto :env_ok
 if not exist "%ENV_STORE%" mkdir "%ENV_STORE%"
 echo       Not found. Downloading %ENV_NAME%.7z (about 320 MB)...
@@ -58,7 +62,7 @@ del "%ENV_STORE%\%ENV_NAME%.7z"
 echo       OK: %ENV_DIR%
 
 :: --- 4. Compiler environment + configure -----------------------------------
-echo [4/5] Setting up the compiler...
+echo [4/6] Setting up the compiler...
 call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 goto :vcvars_failed
 :: Use the CMake and Ninja that come with Visual Studio if they aren't on PATH already
@@ -80,17 +84,32 @@ if errorlevel 1 goto :configure_failed
 :configured
 
 :: --- 5. Build ---------------------------------------------------------------
-echo [5/5] Building (the first build takes a while)...
-:: A running Mumble from this build folder locks its plugin DLLs, which makes linking fail
-powershell -NoProfile -Command "if (Get-Process mumble -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '%BUILD%\*' }) { exit 1 }"
+echo [5/6] Building (the first build takes a while)...
+:: A running Mumble from the build or dist folder locks its files, which makes linking/copying fail
+powershell -NoProfile -Command "if (Get-Process mumble -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '%ROOT%\*' }) { exit 1 }"
 if errorlevel 1 goto :mumble_running
 cmake --build "%BUILD%" --target mumble
 if errorlevel 1 goto :build_failed
 
+:: --- 6. Package --------------------------------------------------------------
+echo [6/6] Copying the finished Mumble to "%DIST%"...
+if exist "%DIST%" rmdir /s /q "%DIST%"
+if exist "%DIST%" goto :package_failed
+mkdir "%DIST%\plugins"
+copy /y "%BUILD%\mumble.exe" "%DIST%\" >nul || goto :package_failed
+for %%f in ("%BUILD%\*.dll") do copy /y "%%f" "%DIST%\" >nul || goto :package_failed
+for %%f in ("%BUILD%\plugins\*.dll") do copy /y "%%f" "%DIST%\plugins\" >nul || goto :package_failed
+copy /y "%ROOT%\LICENSE" "%DIST%\LICENSE.txt" >nul
+if exist "%ROOT%\README_PACKAGE.txt" copy /y "%ROOT%\README_PACKAGE.txt" "%DIST%\README.txt" >nul
+if exist "%DIST_ZIP%" del "%DIST_ZIP%"
+"%SystemRoot%\System32\tar.exe" -a -c -f "%DIST_ZIP%" -C "%ROOT%\dist" "%DIST_NAME%"
+if errorlevel 1 echo       (Could not create the zip - the folder above is still complete.)
+
 echo.
 echo === Done ===
-echo Run Mumble: "%BUILD%\mumble.exe"
-echo (Keep mumble.exe in that folder: it loads the plugins next to it.)
+echo Ready-to-run folder: "%DIST%"
+echo Zip for sharing:     "%DIST_ZIP%"
+echo Copy the whole folder anywhere and run mumble.exe from it.
 goto :end
 
 :: --- Errors ------------------------------------------------------------------
@@ -138,6 +157,10 @@ goto :fail
 :build_failed
 echo.
 echo ERROR: The build failed, see the messages above.
+goto :fail
+:package_failed
+echo.
+echo ERROR: Copying the files to "%DIST%" failed. Close any Mumble or Explorer window using that folder and run this script again.
 goto :fail
 
 :fail

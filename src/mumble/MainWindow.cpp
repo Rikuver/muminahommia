@@ -69,6 +69,8 @@
 #include <QAccessible>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QRegularExpression>
+#include <QtGui/QTextBlock>
+#include <QtGui/QTextDocument>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QUrlQuery>
 #include <QtGui/QClipboard>
@@ -2508,7 +2510,7 @@ void MainWindow::on_qaQuit_triggered() {
 /// Turns chat bar text into HTML without any formatting (no Markdown): every line break stays a line
 /// break, repeated spaces are kept, special characters are shown as typed. Only plain links
 /// (http://..., https://..., www....) are made clickable.
-static QString chatTextToHtml(QString text) {
+QString chatTextToHtml(QString text, bool atMessageStart = true) {
 	text.replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
 
 	// Escapes one piece of normal text and keeps its line breaks and repeated spaces
@@ -2536,7 +2538,7 @@ static QString chatTextToHtml(QString text) {
 	QRegularExpressionMatchIterator it = s_link.globalMatch(text);
 	while (it.hasNext()) {
 		const QRegularExpressionMatch m = it.next();
-		html += plainPart(text.mid(last, m.capturedStart() - last), last == 0);
+		html += plainPart(text.mid(last, m.capturedStart() - last), atMessageStart && last == 0);
 
 		const QString shown = m.captured(0);
 		QString url         = shown;
@@ -2546,8 +2548,55 @@ static QString chatTextToHtml(QString text) {
 		html += QString::fromLatin1("<a href=\"%1\">%2</a>").arg(url.toHtmlEscaped(), shown.toHtmlEscaped());
 		last = m.capturedEnd();
 	}
-	html += plainPart(text.mid(last), last == 0);
+	html += plainPart(text.mid(last), atMessageStart && last == 0);
 	return html;
+}
+
+/// Strips all formatting from a received chat message (bold, italics, headings, colours, fonts, ...)
+/// and shows it with the same rules as our own messages (chatTextToHtml). Line breaks that arrived,
+/// clickable links and pasted images are kept.
+QString plainChatHtml(const QString &html) {
+	QTextDocument doc;
+	doc.setHtml(html);
+
+	QString out;
+	QString pendingText;
+	auto flushText = [&]() {
+		if (!pendingText.isEmpty()) {
+			out += chatTextToHtml(pendingText, out.isEmpty());
+			pendingText.clear();
+		}
+	};
+	auto plainLines = [](QString text) {
+		text.replace(QChar::LineSeparator, QLatin1Char('\n')).replace(QChar::Nbsp, QLatin1Char(' '));
+		return text;
+	};
+
+	for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+		if (block != doc.begin()) {
+			pendingText += QLatin1Char('\n');
+		}
+		for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+			const QTextFragment fragment = it.fragment();
+			if (!fragment.isValid()) {
+				continue;
+			}
+			const QTextCharFormat format = fragment.charFormat();
+			if (format.isImageFormat()) {
+				flushText();
+				out += QString::fromLatin1("<img src=\"%1\" />").arg(format.toImageFormat().name().toHtmlEscaped());
+			} else if (format.isAnchor() && !format.anchorHref().isEmpty()) {
+				flushText();
+				out += QString::fromLatin1("<a href=\"%1\">%2</a>")
+						   .arg(format.anchorHref().toHtmlEscaped(),
+								plainLines(fragment.text()).toHtmlEscaped().replace(QLatin1Char('\n'), QLatin1String("<br>")));
+			} else {
+				pendingText += plainLines(fragment.text());
+			}
+		}
+	}
+	flushText();
+	return out;
 }
 
 void MainWindow::sendChatbarText(QString qsText, bool plainText) {
