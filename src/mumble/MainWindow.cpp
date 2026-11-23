@@ -446,11 +446,10 @@ void MainWindow::setupGui() {
 
 	setupLogBrowser(qteLog);
 
-	// Chat tabs: the tab bar only shows up once a private conversation exists
+	// Chat tabs: the tab bar is always visible, so the Channel tab shows even without private conversations
 	qtwLogTabs = new QTabWidget(qdwLog);
 	qtwLogTabs->setObjectName(QLatin1String("qtwLogTabs"));
 	qtwLogTabs->setDocumentMode(true);
-	qtwLogTabs->setTabBarAutoHide(true);
 	qtwLogTabs->setTabsClosable(true);
 	qteLog->setProperty("chatName", tr("Channel"));
 	qtwLogTabs->addTab(qteLog, tr("Channel"));

@@ -12,7 +12,7 @@
 
 - Log dock holds a `QTabWidget` (`MainWindow::qtwLogTabs`, set up in `MainWindow::setupGui`).
   Tab "Channel" = old `qteLog` (all events + channel chat), cannot be closed.
-  Tab bar hides itself while there is only that one tab, so Mumble looks unchanged until a PM happens.
+  Tab bar is always visible, so the Channel tab shows even with no private conversations.
 - `Log::log(..., unsigned int privateSession = 0)`: non-zero puts the line into that user's tab
   (`MainWindow::privateLog()` creates it). Used for received PMs (`Messages.cpp` msgTextMessage)
   and sent PMs (chat bar and "Send message" dialog).
@@ -27,7 +27,7 @@
 
 ### Test checklist
 
-1. Before any PM: no tab bar, log works as before.
+1. Before any PM: only the "Channel" tab is shown (no close button), log works as before.
 2. Receive a PM: "Name *" tab appears in background, window flashes/notifies, sound plays.
 3. Click the tab: `*` goes away, chat bar says "Type message to user 'Name' here", Enter sends to them.
 4. Channel tab: chat bar sends to the channel again.
