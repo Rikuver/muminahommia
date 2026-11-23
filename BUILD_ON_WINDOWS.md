@@ -18,4 +18,5 @@ The result is **`build\mumble.exe`**. Run it from there, since it loads the plug
 - The script stops with a clear message if something is missing (Visual Studio, Python, CMake tools) and says what to install.
 - `LNK1104: cannot open file ...dll`: Mumble is still running from `build\`. Close it and run the script again.
 - If the first configuration failed, delete the `build\` folder before trying again.
+- The build uses every CPU thread at 100%. If your PC freezes, overheats or shuts down, use **`build_windows_low_load.bat`** instead: it uses half the threads (or a number you give, e.g. `build_windows_low_load.bat 2`).
 - Upstream's general build documentation: `docs\dev\build-instructions\`.
