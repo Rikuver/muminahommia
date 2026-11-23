@@ -160,6 +160,8 @@ public:
 	LogTextBrowser *qteSystemLog = nullptr;
 	/// Called by Log after a message was added to one of the log views (unread counters)
 	void logViewUpdated(LogTextBrowser *log, bool ownMessage);
+	/// Refreshes the ping label next to the chat bar (called when a ping reply arrives)
+	void updatePingDisplay();
 	void openTextMessageDialog(ClientUser *p);
 	void openUserLocalNicknameDialog(const ClientUser &p);
 
@@ -211,6 +213,10 @@ protected:
 	void setupOutputVolumeSlider();
 	void updateOutputVolumeSlider();
 	void updateOutputVolumeLabel(int percent);
+
+	// Ping display to the right of the chat bar
+	QLabel *qlPing = nullptr;
+	void setupPingDisplay();
 
 	// Private message tabs (shown at the bottom of the chat log)
 	QTabWidget *qtwLogTabs = nullptr;
