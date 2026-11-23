@@ -68,6 +68,7 @@
 
 #include <QAccessible>
 #include <QtCore/QStandardPaths>
+#include <QtCore/QRegularExpression>
 #include <QtCore/QSignalBlocker>
 #include <QtCore/QUrlQuery>
 #include <QtGui/QClipboard>
@@ -2504,22 +2505,55 @@ void MainWindow::on_qaQuit_triggered() {
 	this->close();
 }
 
-void MainWindow::sendChatbarText(QString qsText, bool plainText) {
-	if (plainText) {
-		// Escape HTML, unify line endings, then convert spaces to non-breaking ones to prevent multiple
-		// simultaneous ones from being collapsed into one (as a normal HTML renderer does).
-		qsText = qsText.toHtmlEscaped()
-					 .replace("\r\n", "\n")
-					 .replace("\r", "\n")
-					 .replace("\n", "<br>")
-					 .replace(" ", "&nbsp;");
-	} else {
-		// Markdown::markdownToHTML also takes care of replacing line breaks (\n) with the respective
-		// HTML code <br/>. Therefore if Markdown support is ever going to be removed from this
-		// function, this job has to be done explicitly as otherwise line breaks won't be shown on
-		// the receiving end of this text message.
-		qsText = Markdown::markdownToHTML(qsText);
+/// Turns chat bar text into HTML without any formatting (no Markdown): every line break stays a line
+/// break, repeated spaces are kept, special characters are shown as typed. Only plain links
+/// (http://..., https://..., www....) are made clickable.
+static QString chatTextToHtml(QString text) {
+	text.replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+	// Escapes one piece of normal text and keeps its line breaks and repeated spaces
+	auto plainPart = [](const QString &part, bool atMessageStart) {
+		QString html = part.toHtmlEscaped();
+		html.replace(QLatin1Char('\t'), QLatin1String("    "));
+		// "a  b" -> "a&nbsp; b": keeps the extra spaces, but long lines can still wrap
+		while (html.contains(QLatin1String("  "))) {
+			html.replace(QLatin1String("  "), QLatin1String("&nbsp; "));
+		}
+		html.replace(QLatin1String("\n "), QLatin1String("\n&nbsp;")); // leading space on a line
+		if (atMessageStart && html.startsWith(QLatin1Char(' '))) {
+			html.replace(0, 1, QLatin1String("&nbsp;"));
+		}
+		html.replace(QLatin1Char('\n'), QLatin1String("<br>"));
+		return html;
+	};
+
+	// Same link pattern as Mumble's Markdown converter
+	static const QRegularExpression s_link(
+		QLatin1String("([a-zA-Z]+://|[wW][wW][wW]\\.)([A-Za-z0-9-._~:/?#\\[\\]@!$&'()*+,;=]|%[a-fA-F0-9]{2})+"));
+
+	QString html;
+	int last                         = 0;
+	QRegularExpressionMatchIterator it = s_link.globalMatch(text);
+	while (it.hasNext()) {
+		const QRegularExpressionMatch m = it.next();
+		html += plainPart(text.mid(last, m.capturedStart() - last), last == 0);
+
+		const QString shown = m.captured(0);
+		QString url         = shown;
+		if (url.startsWith(QLatin1String("www"), Qt::CaseInsensitive)) {
+			url.prepend(QLatin1String("https://"));
+		}
+		html += QString::fromLatin1("<a href=\"%1\">%2</a>").arg(url.toHtmlEscaped(), shown.toHtmlEscaped());
+		last = m.capturedEnd();
 	}
+	html += plainPart(text.mid(last), last == 0);
+	return html;
+}
+
+void MainWindow::sendChatbarText(QString qsText, bool plainText) {
+	// No Markdown or other formatting: the message is sent exactly as typed (Enter and Ctrl+Enter alike)
+	Q_UNUSED(plainText);
+	qsText = chatTextToHtml(qsText);
 
 	sendChatbarMessage(qsText);
 
