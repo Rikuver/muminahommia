@@ -68,6 +68,7 @@
 
 #include <QAccessible>
 #include <QtCore/QStandardPaths>
+#include <QtCore/QSignalBlocker>
 #include <QtCore/QUrlQuery>
 #include <QtGui/QClipboard>
 #include <QtGui/QDesktopServices>
@@ -76,8 +77,10 @@
 #include <QtWidgets/QDesktopWidget>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QInputDialog>
+#include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QScrollBar>
+#include <QtWidgets/QSlider>
 #include <QtWidgets/QTabWidget>
 #include <QtWidgets/QToolTip>
 #include <QtWidgets/QWhatsThis>
@@ -569,6 +572,8 @@ void MainWindow::setupGui() {
 
 	updateTransmitModeComboBox(Global::get().s.atTransmit);
 
+	setupOutputVolumeSlider();
+
 #ifdef Q_OS_WIN
 	setupView(false);
 #endif
@@ -602,6 +607,71 @@ void MainWindow::updateWindowTitle() {
 	}
 
 	setWindowTitle(title);
+}
+
+void MainWindow::setupOutputVolumeSlider() {
+	qsOutputVolume = new QSlider(Qt::Horizontal, qtIconToolbar);
+	qsOutputVolume->setObjectName(QLatin1String("qsOutputVolume"));
+	qsOutputVolume->setRange(0, 200); // Same range as Settings -> Audio Output -> Output volume
+	qsOutputVolume->setPageStep(10);
+	qsOutputVolume->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+	qsOutputVolume->setMinimumWidth(80);
+	// Reachable with Tab for keyboard users, but a mouse click doesn't pull focus out of the chat bar
+	qsOutputVolume->setFocusPolicy(Qt::TabFocus);
+	qsOutputVolume->setAccessibleName(tr("Output volume"));
+	qsOutputVolume->setWhatsThis(tr("Adjusts the overall volume of incoming speech (Audio Output Volume). "
+									"Values above 100% amplify the audio and may cause distortion."));
+
+	qlOutputVolume = new QLabel(qtIconToolbar);
+	qlOutputVolume->setObjectName(QLatin1String("qlOutputVolume"));
+	qlOutputVolume->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+	qlOutputVolume->setMinimumWidth(qlOutputVolume->fontMetrics().boundingRect(tr("%1 %").arg(200)).width() + 6);
+
+	qtIconToolbar->addWidget(qsOutputVolume);
+	qtIconToolbar->addWidget(qlOutputVolume);
+
+	connect(qsOutputVolume, &QSlider::valueChanged, this, [this](int value) {
+		// AudioOutput reads this on every mix, so the change is heard at once
+		Global::get().s.fVolume = static_cast< float >(value) / 100.0f;
+		updateOutputVolumeLabel(value);
+	});
+
+	// Keep it usable if the toolbar is docked to the left or right side (custom layout)
+	connect(qtIconToolbar, &QToolBar::orientationChanged, this, [this](Qt::Orientation orientation) {
+		qsOutputVolume->setOrientation(orientation);
+		if (orientation == Qt::Horizontal) {
+			qsOutputVolume->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+			qsOutputVolume->setMinimumSize(80, 0);
+		} else {
+			qsOutputVolume->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+			qsOutputVolume->setMinimumSize(0, 80);
+		}
+	});
+
+	updateOutputVolumeSlider();
+}
+
+void MainWindow::updateOutputVolumeSlider() {
+	if (!qsOutputVolume) {
+		return;
+	}
+	const int percent = std::max(0, std::min(200, static_cast< int >(Global::get().s.fVolume * 100.0f + 0.5f)));
+
+	const QSignalBlocker blocker(qsOutputVolume);
+	qsOutputVolume->setValue(percent);
+	updateOutputVolumeLabel(percent);
+}
+
+void MainWindow::updateOutputVolumeLabel(int percent) {
+	QPalette pal = qlOutputVolume->palette();
+	pal.setColor(qlOutputVolume->foregroundRole(),
+				 percent > 100 ? QColor(Qt::red) : qtIconToolbar->palette().color(QPalette::WindowText));
+	qlOutputVolume->setPalette(pal);
+	qlOutputVolume->setText(tr("%1 %").arg(percent));
+
+	const QString tip = tr("Output volume: %1 %").arg(percent);
+	qsOutputVolume->setToolTip(tip);
+	qlOutputVolume->setToolTip(tip);
 }
 
 void MainWindow::updateToolbar() {
@@ -2954,6 +3024,7 @@ void MainWindow::on_VolumeUp_triggered(bool down, QVariant) {
 			vol = 2.0f;
 		}
 		Global::get().s.fVolume = vol;
+		updateOutputVolumeSlider();
 	}
 }
 
@@ -2964,6 +3035,7 @@ void MainWindow::on_VolumeDown_triggered(bool down, QVariant) {
 			vol = 0.0f;
 		}
 		Global::get().s.fVolume = vol;
+		updateOutputVolumeSlider();
 	}
 }
 
@@ -4312,7 +4384,11 @@ void MainWindow::openConfigDialog() {
 
 	QObject::connect(dlg, &ConfigDialog::settingsAccepted, Global::get().talkingUI, &TalkingUI::on_settingsChanged);
 
-	if (dlg->exec() == QDialog::Accepted) {
+	const int result = dlg->exec();
+	// Apply and OK both change fVolume, Cancel may restore it
+	updateOutputVolumeSlider();
+
+	if (result == QDialog::Accepted) {
 		setupView(false);
 		updateTransmitModeComboBox(Global::get().s.atTransmit);
 		updateTrayIcon();

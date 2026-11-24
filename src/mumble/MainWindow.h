@@ -48,6 +48,8 @@ class ListenerVolumeSlider;
 class UserLocalVolumeSlider;
 
 struct ShortcutTarget;
+class QLabel;
+class QSlider;
 class QTabWidget;
 
 struct ContextMenuTarget {
@@ -210,6 +212,13 @@ protected:
 	MUComboBox *qcbTransmitMode;
 	QAction *qaTransmitMode;
 	QAction *qaTransmitModeSeparator;
+
+	// Output volume slider on the icon toolbar (same value as Settings -> Audio Output -> Output volume)
+	QSlider *qsOutputVolume = nullptr;
+	QLabel *qlOutputVolume  = nullptr;
+	void setupOutputVolumeSlider();
+	void updateOutputVolumeSlider();
+	void updateOutputVolumeLabel(int percent);
 
 	Search::SearchDialog *m_searchDialog = nullptr;
 
