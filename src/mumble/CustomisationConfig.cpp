@@ -38,6 +38,8 @@ void CustomisationConfig::load(const Settings &r) {
 	qsbChatHistoryRestore->setValue(r.iChatHistoryRestoreCount);
 	qcbChatHistoryImages->setChecked(r.bChatHistoryStoreImages);
 	qleChatHistoryDirectory->setText(r.qsChatHistoryDirectory);
+	qcbChatSendAsTyped->setChecked(r.bChatSendAsTyped);
+	qcbChatStripReceivedFormatting->setChecked(r.bChatStripReceivedFormatting);
 }
 
 void CustomisationConfig::save() const {
@@ -46,6 +48,8 @@ void CustomisationConfig::save() const {
 	s.iChatHistoryRestoreCount = qsbChatHistoryRestore->value();
 	s.bChatHistoryStoreImages = qcbChatHistoryImages->isChecked();
 	s.qsChatHistoryDirectory  = qleChatHistoryDirectory->text().trimmed();
+	s.bChatSendAsTyped             = qcbChatSendAsTyped->isChecked();
+	s.bChatStripReceivedFormatting = qcbChatStripReceivedFormatting->isChecked();
 }
 
 void CustomisationConfig::on_qpbChatHistoryBrowse_clicked() {

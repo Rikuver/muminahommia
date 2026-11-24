@@ -130,6 +130,35 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="qgbChatFormatting">
+     <property name="title">
+      <string>Chat formatting</string>
+     </property>
+     <layout class="QVBoxLayout">
+      <item>
+       <widget class="QCheckBox" name="qcbChatSendAsTyped">
+        <property name="toolTip">
+         <string>Line breaks, repeated spaces and characters like * _ # ` &gt; are sent exactly as typed. Links stay clickable. When unchecked, the chat bar turns Markdown into formatting like stock Mumble.</string>
+        </property>
+        <property name="text">
+         <string>Send messages exactly as typed (no Markdown)</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="qcbChatStripReceivedFormatting">
+        <property name="toolTip">
+         <string>Removes bold, italics, headings, colours and fonts from messages you receive. Line breaks, links and images are kept. Applies to new messages, saved chat included.</string>
+        </property>
+        <property name="text">
+         <string>Show received messages without formatting</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <spacer>
      <property name="orientation">
       <enum>Qt::Vertical</enum>

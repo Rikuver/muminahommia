@@ -378,6 +378,10 @@ struct Settings {
 	bool bChatHistoryStoreImages = false;
 	/// Folder for the saved chat file, empty = the app data folder
 	QString qsChatHistoryDirectory = {};
+	/// Chat bar sends text as typed instead of converting Markdown
+	bool bChatSendAsTyped = true;
+	/// Others' messages are shown without bold, colours, fonts, ... (links and images kept)
+	bool bChatStripReceivedFormatting = true;
 
 	QPoint qpTalkingUI_Position              = UNSPECIFIED_POSITION;
 	bool bShowTalkingUI                      = false;

@@ -28,6 +28,7 @@
 
 #include <QSignalBlocker>
 #include <QtCore/QMutexLocker>
+#include <QtCore/QRegularExpression>
 #include <QtGui/QImageWriter>
 #include <QtGui/QScreen>
 #include <QtGui/QTextBlock>
@@ -711,6 +712,92 @@ QString Log::validHtml(const QString &html, QTextCursor *tc) {
 	} else {
 		return qtd.toHtml();
 	}
+}
+
+QString Log::plainTextToHtml(QString text, bool atMessageStart) {
+	text.replace(QLatin1String("\r\n"), QLatin1String("\n")).replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+	// Escapes one piece of normal text, keeping its line breaks and repeated spaces
+	const auto plainPart = [](const QString &part, bool atStart) {
+		QString html = part.toHtmlEscaped();
+		html.replace(QLatin1Char('\t'), QLatin1String("    "));
+		// "a  b" -> "a&nbsp; b": keeps the extra spaces, but long lines can still wrap
+		while (html.contains(QLatin1String("  "))) {
+			html.replace(QLatin1String("  "), QLatin1String("&nbsp; "));
+		}
+		html.replace(QLatin1String("\n "), QLatin1String("\n&nbsp;")); // leading space on a line
+		if (atStart && html.startsWith(QLatin1Char(' '))) {
+			html.replace(0, 1, QLatin1String("&nbsp;"));
+		}
+		html.replace(QLatin1Char('\n'), QLatin1String("<br>"));
+		return html;
+	};
+
+	// Same link pattern as Markdown::markdownToHTML
+	static const QRegularExpression link(
+		QLatin1String("([a-zA-Z]+://|[wW][wW][wW]\\.)([A-Za-z0-9-._~:/?#\\[\\]@!$&'()*+,;=]|%[a-fA-F0-9]{2})+"));
+
+	QString html;
+	int last                           = 0;
+	QRegularExpressionMatchIterator it = link.globalMatch(text);
+	while (it.hasNext()) {
+		const QRegularExpressionMatch m = it.next();
+		html += plainPart(text.mid(last, m.capturedStart() - last), atMessageStart && last == 0);
+
+		const QString shown = m.captured(0);
+		QString url         = shown;
+		if (url.startsWith(QLatin1String("www"), Qt::CaseInsensitive)) {
+			url.prepend(QLatin1String("https://"));
+		}
+		html += QString::fromLatin1("<a href=\"%1\">%2</a>").arg(url.toHtmlEscaped(), shown.toHtmlEscaped());
+		last = m.capturedEnd();
+	}
+	html += plainPart(text.mid(last), atMessageStart && last == 0);
+	return html;
+}
+
+QString Log::stripFormatting(const QString &html) {
+	// LogDocument: never loads external resources while parsing untrusted HTML
+	LogDocument doc;
+	doc.setHtml(html);
+
+	QString out;
+	QString pendingText;
+	const auto flushText = [&]() {
+		if (!pendingText.isEmpty()) {
+			out += plainTextToHtml(pendingText, out.isEmpty());
+			pendingText.clear();
+		}
+	};
+	const auto plainLines = [](QString text) {
+		return text.replace(QChar::LineSeparator, QLatin1Char('\n')).replace(QChar::Nbsp, QLatin1Char(' '));
+	};
+
+	for (QTextBlock block = doc.begin(); block.isValid(); block = block.next()) {
+		if (block != doc.begin()) {
+			pendingText += QLatin1Char('\n');
+		}
+		for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+			const QTextFragment fragment = it.fragment();
+			if (!fragment.isValid()) {
+				continue;
+			}
+			const QTextCharFormat format = fragment.charFormat();
+			if (format.isImageFormat()) {
+				flushText();
+				out += QString::fromLatin1("<img src=\"%1\" />").arg(format.toImageFormat().name().toHtmlEscaped());
+			} else if (format.isAnchor() && !format.anchorHref().isEmpty()) {
+				flushText();
+				out += QString::fromLatin1("<a href=\"%1\">%2</a>")
+						   .arg(format.anchorHref().toHtmlEscaped(),
+								plainLines(fragment.text()).toHtmlEscaped().replace(QLatin1Char('\n'), QLatin1String("<br>")));
+			} else {
+				pendingText += plainLines(fragment.text());
+			}
+		}
+	}
+	flushText();
+	return out;
 }
 
 void Log::restoreChatHistory() {

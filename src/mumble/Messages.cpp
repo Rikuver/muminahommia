@@ -1040,8 +1040,11 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	const QString prefixMessage =
 		(target.isEmpty() || channelMessage || privateMessage) ? name : tr("(%1) %2").arg(target).arg(name);
 
+	const QString message = Global::get().s.bChatStripReceivedFormatting ? Log::stripFormatting(u8(msg.message()))
+																		  : u8(msg.message());
+
 	Global::get().l->log(privateMessage ? Log::PrivateTextMessage : Log::TextMessage,
-						 tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())), tr("Message from %1").arg(plainName),
+						 tr("%1: %2").arg(prefixMessage).arg(message), tr("Message from %1").arg(plainName),
 						 false, overrideTTS, pSrc ? pSrc->bLocalIgnoreTTS : false,
 						 (privateMessage && pSrc) ? pSrc->uiSession : 0);
 }

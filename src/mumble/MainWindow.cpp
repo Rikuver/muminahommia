@@ -2300,7 +2300,10 @@ void MainWindow::sendChatbarText(QString qsText, bool plainText) {
 		return;
 	}
 
-	if (plainText) {
+	if (Global::get().s.bChatSendAsTyped) {
+		// Customisation: no Markdown, the message is sent as typed (Enter and Ctrl+Enter alike)
+		qsText = Log::plainTextToHtml(qsText);
+	} else if (plainText) {
 		// Escape HTML, unify line endings, then convert spaces to non-breaking ones to prevent multiple
 		// simultaneous ones from being collapsed into one (as a normal HTML renderer does).
 		qsText = qsText.toHtmlEscaped()

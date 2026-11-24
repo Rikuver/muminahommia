@@ -179,7 +179,9 @@
 	PROCESS(ui, CHAT_HISTORY_MAX_MESSAGES_KEY, iChatHistoryMaxMessages)          \
 	PROCESS(ui, CHAT_HISTORY_RESTORE_COUNT_KEY, iChatHistoryRestoreCount)        \
 	PROCESS(ui, CHAT_HISTORY_STORE_IMAGES_KEY, bChatHistoryStoreImages)          \
-	PROCESS(ui, CHAT_HISTORY_DIRECTORY_KEY, qsChatHistoryDirectory)
+	PROCESS(ui, CHAT_HISTORY_DIRECTORY_KEY, qsChatHistoryDirectory)              \
+	PROCESS(ui, CHAT_SEND_AS_TYPED_KEY, bChatSendAsTyped)                        \
+	PROCESS(ui, CHAT_STRIP_RECEIVED_FORMATTING_KEY, bChatStripReceivedFormatting)
 
 
 #define UPDATE_SETTINGS                                         \

@@ -142,6 +142,12 @@ public:
 	void setIgnore(MsgType t, int ignore = 1 << 30);
 	void clearIgnore();
 	static QString validHtml(const QString &html, QTextCursor *tc = nullptr);
+	/// Chat bar text as HTML without Markdown: line breaks, repeated spaces and special characters stay as
+	/// typed, only plain links (http://..., www....) become clickable
+	static QString plainTextToHtml(QString text, bool atMessageStart = true);
+	/// Received message HTML without formatting (bold, headings, colours, fonts, ...), shown like
+	/// plainTextToHtml(). Line breaks, links and images are kept.
+	static QString stripFormatting(const QString &html);
 	static QString imageToImg(const QByteArray &format, const QByteArray &image);
 	static QString imageToImg(QImage img, int maxSize = 0);
 	static QString msgColor(const QString &text, LogColorType t);

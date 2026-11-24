@@ -210,6 +210,8 @@ const SettingsKey CHAT_HISTORY_MAX_MESSAGES_KEY        = { "chat_history_max_mes
 const SettingsKey CHAT_HISTORY_RESTORE_COUNT_KEY       = { "chat_history_restore_count" };
 const SettingsKey CHAT_HISTORY_STORE_IMAGES_KEY        = { "chat_history_store_images" };
 const SettingsKey CHAT_HISTORY_DIRECTORY_KEY           = { "chat_history_directory" };
+const SettingsKey CHAT_SEND_AS_TYPED_KEY               = { "chat_send_as_typed" };
+const SettingsKey CHAT_STRIP_RECEIVED_FORMATTING_KEY   = { "chat_strip_received_formatting" };
 
 // Last connection
 const SettingsKey LAST_USERNAME_KEY    = { "username" };
