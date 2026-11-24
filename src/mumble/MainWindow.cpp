@@ -449,29 +449,36 @@ void MainWindow::setupGui() {
 
 	setupLogBrowser(qteLog);
 
-	// Chat tabs: the tab bar is always visible, so the Channel tab shows even without private conversations
+	// Chat tabs: [server/System] [Chat] [private conversations...]. The tab bar is always visible.
 	qtwLogTabs = new QTabWidget(qdwLog);
 	qtwLogTabs->setObjectName(QLatin1String("qtwLogTabs"));
 	qtwLogTabs->setDocumentMode(true);
 	qtwLogTabs->setTabsClosable(true);
-	qteLog->setProperty("chatName", tr("Channel"));
-	qtwLogTabs->addTab(qteLog, tr("Channel"));
-	// The main log can't be closed
+	qteSystemLog = createLogTab(tr("Server and system messages"));
+	qteSystemLog->setObjectName(QLatin1String("qteSystemLog"));
+	qteLog->setProperty("chatName", tr("Chat"));
+	qtwLogTabs->addTab(qteSystemLog, QString());
+	qtwLogTabs->addTab(qteLog, QString());
+	// System and Chat can't be closed
 	const auto closeSide = static_cast< QTabBar::ButtonPosition >(
 		qtwLogTabs->style()->styleHint(QStyle::SH_TabBar_CloseButtonPosition, nullptr, qtwLogTabs->tabBar()));
 	qtwLogTabs->tabBar()->setTabButton(0, closeSide, nullptr);
+	qtwLogTabs->tabBar()->setTabButton(1, closeSide, nullptr);
+	refreshLogTabText(qteSystemLog);
+	refreshLogTabText(qteLog);
+	qtwLogTabs->setCurrentWidget(qteLog);
 	qdwLog->setWidget(qtwLogTabs);
 
 	connect(qtwLogTabs, &QTabWidget::currentChanged, this, [this](int index) {
 		if (auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->widget(index))) {
-			log->setProperty("unread", false);
+			log->setProperty("unread", 0);
 			refreshLogTabText(log);
 		}
 		updateChatBar();
 	});
 	connect(qtwLogTabs, &QTabWidget::tabCloseRequested, this, [this](int index) {
 		auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->widget(index));
-		if (!log || log == qteLog)
+		if (!log || log == qteLog || log == qteSystemLog)
 			return;
 		const unsigned int session = log->property("session").toUInt();
 		if (qhPrivateLogs.value(session) == log)
@@ -861,11 +868,11 @@ void MainWindow::keyPressEvent(QKeyEvent *e) {
 /// switches between major elements of an application.
 /// This behavior is for example seen in Windows's (File) Explorer.
 ///
-/// The main widgets are qteLog (the log view), qteChat (chat input bar)
+/// The main widgets are the shown log tab, qteChat (chat input bar)
 /// and qtvUsers (users tree view).
 void MainWindow::focusNextMainWidget() {
 	QWidget *mainFocusWidgets[] = {
-		qteLog,
+		qtwLogTabs->currentWidget(),
 		qteChat,
 		qtvUsers,
 	};
@@ -3569,6 +3576,7 @@ void MainWindow::viewCertificate(bool) {
 void MainWindow::serverConnected() {
 	Global::get().uiSession    = 0;
 	Global::get().pPermissions = ChanACL::None;
+	refreshLogTabText(qteSystemLog); // named after the new server
 
 #ifdef Q_OS_MAC
 	// Suppress AppNap while we're connected to a server.
@@ -3994,23 +4002,29 @@ LogTextBrowser *MainWindow::privateLog(unsigned int session) {
 	if (!user || !qtwLogTabs)
 		return qteLog;
 
-	auto *log = new LogTextBrowser(qtwLogTabs);
-	log->setOpenLinks(false);
-	log->setContextMenuPolicy(Qt::CustomContextMenu);
-	log->setFrameStyle(qteLog->frameStyle());
-	log->setAccessibleName(tr("Private chat with %1").arg(user->qsName));
-	setupLogBrowser(log);
-	connect(log, &LogTextBrowser::customContextMenuRequested, this,
-			&MainWindow::on_qteLog_customContextMenuRequested);
-	connect(log, &LogTextBrowser::anchorClicked, this, &MainWindow::on_qteLog_anchorClicked);
-	connect(log, QOverload< const QUrl & >::of(&LogTextBrowser::highlighted), this,
-			&MainWindow::on_qteLog_highlighted);
-
+	LogTextBrowser *log = createLogTab(tr("Private chat with %1").arg(user->qsName));
 	log->setProperty("chatName", user->qsName);
 	log->setProperty("session", session);
 	qhPrivateLogs.insert(session, log);
 	qtwLogTabs->addTab(log, QString());
 	refreshLogTabText(log);
+	return log;
+}
+
+LogTextBrowser *MainWindow::createLogTab(const QString &accessibleName) {
+	auto *log = new LogTextBrowser(qtwLogTabs);
+	log->setOpenLinks(false);
+	log->setContextMenuPolicy(Qt::CustomContextMenu);
+	log->setFrameStyle(qteLog->frameStyle());
+	log->setAccessibleName(accessibleName);
+	setupLogBrowser(log);
+	// The first message shouldn't start with a "Date changed" line
+	log->setProperty("logDate", QDate::currentDate());
+	connect(log, &LogTextBrowser::customContextMenuRequested, this,
+			&MainWindow::on_qteLog_customContextMenuRequested);
+	connect(log, &LogTextBrowser::anchorClicked, this, &MainWindow::on_qteLog_anchorClicked);
+	connect(log, QOverload< const QUrl & >::of(&LogTextBrowser::highlighted), this,
+			&MainWindow::on_qteLog_highlighted);
 	return log;
 }
 
@@ -4031,25 +4045,42 @@ bool MainWindow::isLogVisible(const LogTextBrowser *log) const {
 void MainWindow::markLogUnread(LogTextBrowser *log) {
 	if (isLogVisible(log))
 		return;
-	log->setProperty("unread", true);
+	log->setProperty("unread", log->property("unread").toInt() + 1);
 	refreshLogTabText(log);
 }
 
 void MainWindow::refreshLogTabText(LogTextBrowser *log) {
+	const int index = qtwLogTabs->indexOf(log);
+	QString text    = log->property("chatName").toString();
+	QString toolTip;
+	if (log == qteLog) {
+		toolTip = tr("Text messages sent in the channel");
+	} else if (log == qteSystemLog) {
+		// Named after the server, e.g. "example.org"
+		QString host, user, pw;
+		unsigned short port = 0;
+		if (Global::get().sh)
+			Global::get().sh->getConnectionInfo(host, port, user, pw);
+		text    = host.isEmpty() ? tr("System") : host;
+		toolTip = tr("Server and system messages (joins, leaves, connection info, ...)");
+	} else {
+		toolTip = tr("Private messages with %1").arg(text.toHtmlEscaped());
+		if (log->property("session").toUInt() == 0)
+			text = tr("%1 (offline)").arg(text);
+	}
+	const int unread = log->property("unread").toInt();
+	if (unread > 0)
+		text = tr("%1 (%2)", "tab name, unread message count").arg(text).arg(unread);
 	// Escape '&' so names don't turn into keyboard shortcuts
-	QString text = log->property("chatName").toString().replace(QLatin1Char('&'), QLatin1String("&&"));
-	if (log != qteLog && log->property("session").toUInt() == 0)
-		text = tr("%1 (offline)").arg(text);
-	if (log->property("unread").toBool())
-		text += QLatin1String(" *");
-	qtwLogTabs->setTabText(qtwLogTabs->indexOf(log), text);
+	qtwLogTabs->setTabText(index, text.replace(QLatin1Char('&'), QLatin1String("&&")));
+	qtwLogTabs->setTabToolTip(index, toolTip);
 }
 
 LogTextBrowser *MainWindow::currentPrivateLog() const {
 	if (!qtwLogTabs)
 		return nullptr;
 	auto *log = qobject_cast< LogTextBrowser * >(qtwLogTabs->currentWidget());
-	return log == qteLog ? nullptr : log;
+	return (log == qteLog || log == qteSystemLog) ? nullptr : log;
 }
 
 void MainWindow::customEvent(QEvent *evt) {

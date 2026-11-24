@@ -794,11 +794,18 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 
 	quint32 flags = Global::get().s.qmMessages.value(mt);
 
-	// Private messages go into their own chat tab (only created if the message is actually shown)
+	// Private messages go into their own chat tab (only created if the message is actually shown),
+	// other text messages into the Chat tab and everything else into the System tab
+	MainWindow *mw       = Global::get().mw;
 	LogTextBrowser *tlog = nullptr;
-	if (Global::get().mw) {
-		tlog = (privateSession && (flags & Settings::LogConsole)) ? Global::get().mw->privateLog(privateSession)
-																  : Global::get().mw->qteLog;
+	if (mw) {
+		if (privateSession && (flags & Settings::LogConsole)) {
+			tlog = mw->privateLog(privateSession);
+		} else if (mt == TextMessage || mt == PrivateTextMessage || !mw->qteSystemLog) {
+			tlog = mw->qteLog;
+		} else {
+			tlog = mw->qteSystemLog;
+		}
 	}
 
 	// Message output on console
@@ -838,12 +845,17 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 		// Set the line height of the leading blank line to zero
 		tc.setBlockFormat(bf);
 
-		// Private tabs are short-lived, so only the main log gets date markers
-		if (tlog == Global::get().mw->qteLog && qdDate != dt.date()) {
-			qdDate = dt.date();
+		// Every tab tracks its own date. qdDate belongs to the Chat tab (restoreChatHistory() uses it too).
+		const bool isMainLog = (tlog == mw->qteLog);
+		if ((isMainLog ? qdDate : tlog->property("logDate").toDate()) != dt.date()) {
+			if (isMainLog) {
+				qdDate = dt.date();
+			} else {
+				tlog->setProperty("logDate", dt.date());
+			}
 			tc.insertFrame(qttf);
-			tc.insertHtml(
-				tr("[Date changed to %1]\n").arg(QLocale().toString(qdDate, QLocale::ShortFormat).toHtmlEscaped()));
+			tc.insertHtml(tr("[Date changed to %1]\n")
+							  .arg(QLocale().toString(dt.date(), QLocale::ShortFormat).toHtmlEscaped()));
 			tc.movePosition(QTextCursor::End);
 			tc.setBlockFormat(bf);
 		}
@@ -883,12 +895,17 @@ void Log::log(MsgType mt, const QString &console, const QString &terse, bool own
 			tlog->setLogScroll(oldscrollvalue);
 		}
 
-		Global::get().mw->markLogUnread(tlog);
+		// System tab: only problems count as unread, not every join and leave
+		if (!ownMessage
+			&& (tlog != mw->qteSystemLog || mt == CriticalError || mt == Warning || mt == PermissionDenied)) {
+			mw->markLogUnread(tlog);
+		}
 	}
 
 	if (!ownMessage) {
+		// System messages notify like in stock Mumble, whichever tab is shown
 		if (!(Global::get().mw->isActiveWindow() && Global::get().mw->qdwLog->isVisible()
-			  && Global::get().mw->isLogVisible(tlog))) {
+			  && (tlog == Global::get().mw->qteSystemLog || Global::get().mw->isLogVisible(tlog)))) {
 			// Message notification with window highlight
 			if (flags & Settings::LogHighlight) {
 				QApplication::alert(Global::get().mw);

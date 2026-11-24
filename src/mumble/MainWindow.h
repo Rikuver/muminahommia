@@ -155,9 +155,11 @@ public:
 	void openTextMessageDialog(ClientUser *p);
 	void openUserLocalNicknameDialog(const ClientUser &p);
 
-	// Chat tabs in the log dock: tab 0 is the main log (qteLog), every private conversation gets its own tab.
-	// Each private LogTextBrowser carries the properties "chatName", "session" (0 = user offline) and "unread".
+	// Chat tabs in the log dock: System (qteSystemLog), Chat (qteLog), and one tab per private conversation.
+	// Each private LogTextBrowser carries the properties "chatName", "session" (0 = user offline) and "unread" (count).
 	QTabWidget *qtwLogTabs = nullptr;
+	/// "System" tab (named after the server): everything except text messages
+	LogTextBrowser *qteSystemLog = nullptr;
 	QHash< unsigned int, LogTextBrowser * > qhPrivateLogs;
 	/// Returns the private chat tab for the user with the given session, creating it if needed.
 	/// Falls back to qteLog if there is no such user.
@@ -178,6 +180,8 @@ protected:
 	Usage uUsage;
 
 	void setupLogBrowser(LogTextBrowser *log);
+	/// A new, not yet added log view with the same link and context menu handling as qteLog
+	LogTextBrowser *createLogTab(const QString &accessibleName);
 	void refreshLogTabText(LogTextBrowser *log);
 	/// The private chat tab that is currently shown, or nullptr if the main log is shown
 	LogTextBrowser *currentPrivateLog() const;
