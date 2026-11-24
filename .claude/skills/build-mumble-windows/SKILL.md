@@ -7,13 +7,15 @@ description: Build and launch the Mumble client of this fork on Windows from Cla
 
 ## Build
 
-1. Close a running Mumble first, or linking fails with LNK1104 (the script refuses):
+1. Close a running Mumble first, or linking fails with LNK1104 (the script refuses).
+   **Always ask the user first and wait for a yes**, every time, even if they
+   said yes earlier: the user uses this build for live calls, and a silent kill
+   looks exactly like a crash. Check with `Get-Process mumble -ErrorAction SilentlyContinue`;
+   if it is running, ask, and only after the yes run:
 
    ```powershell
    Get-Process mumble -ErrorAction SilentlyContinue | Stop-Process
    ```
-
-   Ask the user before stopping it if they may be in a call.
 
 2. Run the low-load build from **PowerShell**, in the background (a full build
    takes a long time; an incremental one is much shorter):
