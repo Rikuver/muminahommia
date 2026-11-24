@@ -424,6 +424,9 @@ std::size_t GlobalShortcutWin::mouseSlot(int button) {
 }
 
 void GlobalShortcutWin::hookThreadMain() {
+	// All system input waits for the hooks, so a starved hook thread lags every application, games included.
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+
 	// Calling PeekMessage() forces the creation of this thread's message queue.
 	MSG msg;
 	PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
@@ -540,6 +543,8 @@ void GlobalShortcutWin::updateSuppressionHooks() {
 	m_wantKeyboardHook = wantKeyboard;
 	m_wantMouseHook    = wantMouse;
 
+	// shortcut: once started, the hook thread idles in GetMessage() until shutdown even without hooks; stopping it
+	// here would need joining outside m_stateMutex (the hook thread takes it), do that if an idle thread ever matters.
 	if (!m_hookThread.joinable()) {
 		if (!wantKeyboard && !wantMouse) {
 			// Suppression was never used, so there's no need for the hook thread.
@@ -627,17 +632,6 @@ bool GlobalShortcutWin::filterOwnInputMessage(const MSG &msg) {
 		return false;
 	}
 
-	if (down && virtualKey == VK_CONTROL && !extended) {
-		// With AltGr, Windows generates a fake left Ctrl press right before the right Alt press.
-		// Raw input and the keyboard hook don't report it as the left Ctrl key, so we must ignore it as well.
-		MSG next;
-		if (PeekMessageW(&next, msg.hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE | PM_NOYIELD)
-			&& (next.message == WM_KEYDOWN || next.message == WM_SYSKEYDOWN) && next.wParam == VK_MENU
-			&& (next.lParam & (1 << 24)) && next.time == msg.time) {
-			return false;
-		}
-	}
-
 	const InputKeyboard key = keyFromVirtualKey(virtualKey, scanCode, extended);
 
 	OwnInput input  = {};
@@ -649,6 +643,17 @@ bool GlobalShortcutWin::filterOwnInputMessage(const MSG &msg) {
 	// Let everything that isn't suppressible through right away.
 	if (input.slot == SUPPRESS_INVALID_SLOT || !m_suppressible[input.slot]) {
 		return false;
+	}
+
+	if (down && virtualKey == VK_CONTROL && !extended) {
+		// With AltGr, Windows generates a fake left Ctrl press right before the right Alt press.
+		// Raw input and the keyboard hook don't report it as the left Ctrl key, so we must ignore it as well.
+		MSG next;
+		if (PeekMessageW(&next, msg.hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE | PM_NOYIELD)
+			&& (next.message == WM_KEYDOWN || next.message == WM_SYSKEYDOWN) && next.wParam == VK_MENU
+			&& (next.lParam & (1 << 24)) && next.time == msg.time) {
+			return false;
+		}
 	}
 
 	// Decide on the hook thread, like for the hooks: handleButton() emits signals, which must not
@@ -939,6 +944,12 @@ void GlobalShortcutWin::injectRawInputMessage(HRAWINPUT handle, const bool foreg
 	switch (input->header.dwType) {
 		case RIM_TYPEMOUSE: {
 			const RAWMOUSE &mouse = input->data.mouse;
+			// RI_MOUSE_BUTTON_1_DOWN (0x1) to RI_MOUSE_BUTTON_5_UP (0x200); higher bits are the wheels.
+			constexpr USHORT BUTTON_FLAGS_MASK = 0x3FF;
+			if (!(mouse.usButtonFlags & BUTTON_FLAGS_MASK)) {
+				// Movement and wheel only: don't wake our thread or fill the queue thousands of times per second.
+				return;
+			}
 			tryPlaceEvent(input->header.hDevice, false, std::make_unique< MsgMouse >(mouse.usButtonFlags));
 			break;
 		}
