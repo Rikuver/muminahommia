@@ -33,4 +33,5 @@ Be lazy about the solution, never about reading the code first or about finishin
 - Design notes: `docs/muminahommia_poke_and_chat_tabs_design.md`.
 - Persistent chat log and Customisation settings page: `docs/muminahommia_persistent_chat_log_and_customisation_settings_investigation.md`.
 - Pasting an image into the chat bar without sending it (investigation): `docs/muminahommia_paste_image_into_chat_bar_without_autosend_investigation.md`.
+- Input lag while gaming (Windows audit, ranked fixes): `docs/muminahommia_gaming_input_lag_audit_shortcuts_overlay_positional_audio.md`.
 - Porting Harri's tab design (`origin/harri-build`) onto main, current state and plan: `docs/muminahommia_harri_build_tab_design_port_handoff.md`.

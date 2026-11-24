@@ -22,6 +22,7 @@
 #	include "GKey.h"
 #endif
 
+#include <algorithm>
 #include <codecvt>
 #include <iomanip>
 #include <mutex>
@@ -863,23 +864,36 @@ void GlobalShortcutWin::run() {
 			std::lock_guard< std::mutex > stateLock(m_stateMutex);
 			remap();
 			updateSuppressionHooks();
+
+			// remap() forgets which buttons are down: report held gamepad buttons again on their next report.
+			for (auto &entry : m_devices) {
+				entry.second.buttons.assign(entry.second.buttons.size(), false);
+			}
+#ifdef USE_XBOXINPUT
+			std::fill(std::begin(m_xinputLastPacket), std::end(m_xinputLastPacket), 0);
+#endif
 		}
 
 		while (const std::unique_ptr< MsgRaw > *item = m_msgQueue.front()) {
 			const std::unique_ptr< MsgRaw > &msg = *item;
-			std::lock_guard< std::mutex > stateLock(m_stateMutex);
 
 			switch (msg->type()) {
 				case MsgRaw::Hid:
+					// These lock m_stateMutex only around handleButton(): slow device I/O (addDevice(), XInput)
+					// must not hold up the low-level hooks, as all system input waits for them.
 					processOther();
 					processMsgHid(static_cast< MsgHid & >(*msg));
 					break;
-				case MsgRaw::Keyboard:
+				case MsgRaw::Keyboard: {
+					std::lock_guard< std::mutex > stateLock(m_stateMutex);
 					processMsgKeyboard(static_cast< MsgKeyboard & >(*msg));
 					break;
-				case MsgRaw::Mouse:
+				}
+				case MsgRaw::Mouse: {
+					std::lock_guard< std::mutex > stateLock(m_stateMutex);
 					processMsgMouse(static_cast< MsgMouse & >(*msg));
 					break;
+				}
 			}
 
 			m_msgQueue.pop();
@@ -1036,18 +1050,25 @@ void GlobalShortcutWin::processMsgHid(MsgHid &msg) {
 		return;
 	}
 
-	device.buttons.assign(device.buttons.size(), false);
+	std::vector< bool > buttons(device.buttons.size(), false);
 	for (ULONG i = 0; i < nUsages; ++i) {
-		device.buttons[usages[i] - device.usageRange.first] = true;
+		buttons[usages[i] - device.usageRange.first] = true;
 	}
 
-	for (uint32_t i = 0; i < device.buttons.size(); ++i) {
+	// Many gamepads send reports continuously (stick and sensor data), so only handle buttons that changed.
+	std::lock_guard< std::mutex > stateLock(m_stateMutex);
+	for (uint32_t i = 0; i < buttons.size(); ++i) {
+		if (buttons[i] == device.buttons[i]) {
+			continue;
+		}
+		device.buttons[i] = buttons[i];
+
 		InputHid input;
 		input.button       = i;
 		input.deviceName   = device.name;
 		input.devicePrefix = device.prefix;
 
-		handleButton(QVariant::fromValue(input), device.buttons[i]);
+		handleButton(QVariant::fromValue(input), buttons[i]);
 	}
 }
 
@@ -1189,6 +1210,7 @@ GlobalShortcutWin::DeviceMap::iterator GlobalShortcutWin::addDevice(const HANDLE
 
 	if (device.xinput) {
 		++m_xinputDevices;
+		m_xinputLastEmptyCheck = {};
 	}
 
 	qInfo("GlobalShortcutWin: \"%s\" added", device.name.c_str());
@@ -1242,9 +1264,21 @@ bool GlobalShortcutWin::xinputIsPressed(const uint8_t bit, const XboxInputState 
 void GlobalShortcutWin::processOther() {
 #ifdef USE_XBOXINPUT
 	if (m_xinput && m_xinputDevices > 0) {
+		// We're called for every HID report and GetState() is slow for empty slots, so check those once a second.
+		const auto now        = std::chrono::steady_clock::now();
+		const bool checkEmpty = now - m_xinputLastEmptyCheck >= std::chrono::seconds(1);
+		if (checkEmpty) {
+			m_xinputLastEmptyCheck = now;
+		}
+
 		for (uint8_t i = 0; i < XBOXINPUT_MAX_DEVICES; ++i) {
+			if (!m_xinputConnected[i] && !checkEmpty) {
+				continue;
+			}
+
 			XboxInputState state;
-			if (m_xinput->GetState(i, &state) != ERROR_SUCCESS) {
+			m_xinputConnected[i] = m_xinput->GetState(i, &state) == ERROR_SUCCESS;
+			if (!m_xinputConnected[i]) {
 				continue;
 			}
 
@@ -1257,9 +1291,12 @@ void GlobalShortcutWin::processOther() {
 			InputXinput input = {};
 			input.device      = i;
 
-			for (uint8_t j = 0; j < 18; ++j) {
-				input.code = j;
-				handleButton(QVariant::fromValue(input), xinputIsPressed(j, state));
+			{
+				std::lock_guard< std::mutex > stateLock(m_stateMutex);
+				for (uint8_t j = 0; j < 18; ++j) {
+					input.code = j;
+					handleButton(QVariant::fromValue(input), xinputIsPressed(j, state));
+				}
 			}
 
 			m_xinputLastPacket[i] = state.packetNumber;
@@ -1268,6 +1305,7 @@ void GlobalShortcutWin::processOther() {
 #endif
 #ifdef USE_GKEY
 	if (m_gkey) {
+		std::lock_guard< std::mutex > stateLock(m_stateMutex);
 		InputGkey input = {};
 		input.keyboard  = false;
 

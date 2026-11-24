@@ -14,6 +14,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -155,6 +156,10 @@ protected:
 	/// Any new data queried for a device is only valid
 	/// if the packet number is different than last time we queried it.
 	uint32_t m_xinputLastPacket[XBOXINPUT_MAX_DEVICES];
+	/// Slots that had a controller on the last GetState(), see processOther().
+	std::array< bool, XBOXINPUT_MAX_DEVICES > m_xinputConnected{};
+	/// Default-constructed (epoch) means "check all slots on the next report", e.g. after a device was added.
+	std::chrono::steady_clock::time_point m_xinputLastEmptyCheck{};
 
 	static bool xinputIsPressed(const uint8_t bit, const XboxInputState &state);
 #endif
