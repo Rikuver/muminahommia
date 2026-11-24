@@ -1,5 +1,25 @@
 # Handoff: port Harri's tab design (origin/harri-build) onto main
 
+## Current state (2026-11-24): ported on branch `port-harri-tabs`, not merged, not pushed
+
+Owner said "port it" and asked for a setting for the message changes. Commits on `port-harri-tabs` (after `caf93df69`):
+
+| Commit | What |
+|---|---|
+| `cae01871f` | This doc + CLAUDE.md pointer |
+| `1b58caac0` | Volume slider (`Qt::TabFocus`) |
+| `e210ba445` | System / Chat tabs, per-tab dates, unread count, System counts only errors/warnings/denied |
+| `ba6f8c8a0` | Movable tabs, middle-click close (local only, no close notice), chat bar PMs only from a private tab |
+| `bc8c82d5b` | `Nickname: message` formatting (`ownChatName()`) |
+| `ee179414e` | Customisation page "Chat formatting": `bChatSendAsTyped` (`chat_send_as_typed`), `bChatStripReceivedFormatting` (`chat_strip_received_formatting`), both default on. Helpers `Log::plainTextToHtml`, `Log::stripFormatting` |
+| `6295afdce` | Ping label next to the chat bar |
+
+Kept from main: session-keyed private tabs (`privateSession` param), `(offline)` label, ChatHistory (own PMs excluded), `updateLogSettings()`.
+Not taken: Harri's close notice, `README_PACKAGE.txt`, his `build_windows*.bat` changes, his `dist/` packaging (parked).
+
+Verified so far: each step's changed `.cpp` files compile (object only; Mumble from `build\` was running, so no link).
+Next step: full build + link with skill `build-mumble-windows` once Mumble is closed, test in the app, then merge into `main` and push to `origin` when the owner says so.
+
 ## Update 2026-11-24: 3 new commits, and cherry-pick is possible after all
 
 `origin/harri-build` now has 4 commits on top of upstream `dfbac8d3d`:
