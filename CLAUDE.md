@@ -32,4 +32,5 @@ Be lazy about the solution, never about reading the code first or about finishin
 - Building and running: skill `build-mumble-windows` (`.claude/skills/build-mumble-windows/SKILL.md`).
 - Design notes: `docs/muminahommia_poke_and_chat_tabs_design.md`.
 - Persistent chat log and Customisation settings page: `docs/muminahommia_persistent_chat_log_and_customisation_settings_investigation.md`.
+- Pasting an image into the chat bar without sending it (investigation): `docs/muminahommia_paste_image_into_chat_bar_without_autosend_investigation.md`.
 - Porting Harri's tab design (`origin/harri-build`) onto main, current state and plan: `docs/muminahommia_harri_build_tab_design_port_handoff.md`.

@@ -18,9 +18,102 @@
 #include <QtGui/QClipboard>
 #include <QtGui/QContextMenuEvent>
 #include <QtGui/QKeyEvent>
+#include <QtGui/QTextBlock>
+#include <QtGui/QTextFragment>
 #include <QtWidgets/QScrollBar>
 
+#include <QtCore/QBuffer>
+#include <QtGui/QImageReader>
+#include <QtGui/QTextImageFormat>
+
+#include <limits>
+
+namespace {
+// Marks an image size set by fitImagesToWidth(), so it can grow back when there is room again
+constexpr int FITTED_IMAGE_PROPERTY = QTextFormat::UserProperty + 1;
+
+QSize naturalImageSize(QTextDocument *doc, const QString &name) {
+	const QVariant res = doc->resource(QTextDocument::ImageResource, QUrl(name));
+	if (res.canConvert< QImage >()) {
+		return res.value< QImage >().size();
+	}
+	if (res.canConvert< QPixmap >()) {
+		return res.value< QPixmap >().size();
+	}
+	// data: URLs load as raw bytes; read only the header for the size
+	QByteArray bytes = res.toByteArray();
+	QBuffer buffer(&bytes);
+	return QImageReader(&buffer).size();
+}
+} // namespace
+
+void fitImagesToWidth(QTextDocument *doc, int maxWidth, int maxHeight) {
+	if (maxWidth <= 0) {
+		return;
+	}
+	struct Change {
+		int position;
+		int length;
+		QTextImageFormat format;
+	};
+	QVector< Change > changes;
+	for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
+		for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+			const QTextFragment fragment = it.fragment();
+			if (!fragment.isValid() || !fragment.charFormat().isImageFormat()) {
+				continue;
+			}
+			QTextImageFormat format = fragment.charFormat().toImageFormat();
+			const bool fitted       = format.hasProperty(FITTED_IMAGE_PROPERTY);
+			// A size the sender set is the base, unless it is one this function set
+			const QSize base = (!fitted && format.width() > 0 && format.height() > 0)
+								   ? QSize(qRound(format.width()), qRound(format.height()))
+								   : naturalImageSize(doc, format.name());
+			if (base.isEmpty()) {
+				continue;
+			}
+			const QSize bound(maxWidth, maxHeight > 0 ? maxHeight : std::numeric_limits< int >::max());
+			const QSize target = (base.width() > bound.width() || base.height() > bound.height())
+									 ? base.scaled(bound, Qt::KeepAspectRatio)
+									 : base;
+			if (fitted ? (qRound(format.width()) == target.width() && qRound(format.height()) == target.height())
+					   : target == base) {
+				continue;
+			}
+			format.setWidth(target.width());
+			format.setHeight(target.height());
+			format.setProperty(FITTED_IMAGE_PROPERTY, true);
+			changes.append({ fragment.position(), fragment.length(), format });
+		}
+	}
+	// Applied after the walk, since changing formats while iterating can merge or split fragments
+	for (const Change &change : changes) {
+		QTextCursor tc(doc);
+		tc.setPosition(change.position);
+		tc.setPosition(change.position + change.length, QTextCursor::KeepAnchor);
+		tc.setCharFormat(change.format);
+	}
+}
+
 LogTextBrowser::LogTextBrowser(QWidget *p) : QTextBrowser(p) {
+}
+
+void LogTextBrowser::scheduleFitImages() {
+	// shortcut: rescans the whole log after each change; fine for iMaxLogBlocks-sized logs, scan only the changed
+	// range if it gets slow
+	if (m_fitPending) {
+		return;
+	}
+	m_fitPending = true;
+	QTimer::singleShot(0, this, [this]() {
+		m_fitPending = false;
+		fitImagesToWidth(document(), viewport()->width() - IMAGE_WIDTH_SLACK);
+	});
+}
+
+void LogTextBrowser::resizeEvent(QResizeEvent *e) {
+	QTextBrowser::resizeEvent(e);
+	scheduleFitImages();
 }
 
 int LogTextBrowser::getLogScroll() {
@@ -96,7 +189,7 @@ void ChatbarTextEdit::dragMoveEvent(QDragMoveEvent *evt) {
 
 void ChatbarTextEdit::dropEvent(QDropEvent *evt) {
 	inFocus(true);
-	if (sendImagesFromMimeData(evt->mimeData())) {
+	if (insertImagesFromMimeData(evt->mimeData())) {
 		evt->acceptProposedAction();
 	} else {
 		QTextEdit::dropEvent(evt);
@@ -134,6 +227,7 @@ QSize ChatbarTextEdit::sizeHint() const {
 
 void ChatbarTextEdit::resizeEvent(QResizeEvent *e) {
 	QTextEdit::resizeEvent(e);
+	fitImagesToBar();
 	QTimer::singleShot(0, this, SLOT(doScrollbar()));
 
 	if (bDefaultVisible) {
@@ -177,18 +271,18 @@ bool ChatbarTextEdit::canInsertFromMimeData(const QMimeData *source) const {
 }
 
 void ChatbarTextEdit::insertFromMimeData(const QMimeData *source) {
-	if (!sendImagesFromMimeData(source)) {
+	if (!insertImagesFromMimeData(source)) {
 		QTextEdit::insertFromMimeData(source);
 	}
 }
 
-bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
+bool ChatbarTextEdit::insertImagesFromMimeData(const QMimeData *source) {
 	if ((source->hasImage() || source->hasUrls())) {
 		if (Global::get().bAllowHTML) {
 			if (source->hasImage()) {
 				// Process the image pasted onto the chatbar.
 				QImage image = qvariant_cast< QImage >(source->imageData());
-				if (emitPastedImage(image)) {
+				if (insertPastedImage(image)) {
 					return true;
 				} else {
 					Global::get().l->log(Log::Information, tr("Unable to send image: too large."));
@@ -206,7 +300,7 @@ bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
 
 					if (image.isNull())
 						continue;
-					if (emitPastedImage(image)) {
+					if (insertPastedImage(image)) {
 						++count;
 					} else {
 						Global::get().l->log(Log::Information, tr("Unable to send image %1: too large.").arg(path));
@@ -222,14 +316,58 @@ bool ChatbarTextEdit::sendImagesFromMimeData(const QMimeData *source) {
 	return false;
 }
 
-bool ChatbarTextEdit::emitPastedImage(QImage image) {
-	QString processedImage = Log::imageToImg(image, static_cast< int >(Global::get().uiImageLength));
+bool ChatbarTextEdit::insertPastedImage(QImage image) {
+	const QString processedImage = Log::imageToImg(image, static_cast< int >(Global::get().uiImageLength));
 	if (processedImage.length() > 0) {
-		QString imgHtml = QLatin1String("<br />") + processedImage;
-		emit pastedImage(imgHtml);
+		// Customisation: the image waits in the chat bar as a thumbnail and goes out with Enter
+		textCursor().insertHtml(processedImage);
+		fitImagesToBar();
 		return true;
 	}
 	return false;
+}
+
+void ChatbarTextEdit::fitImagesToBar() {
+	fitImagesToWidth(document(), viewport()->width() - IMAGE_WIDTH_SLACK, fontMetrics().height() * 4);
+}
+
+QString ChatbarTextEdit::textWithImages(QStringList &images) const {
+	QString text;
+	for (QTextBlock block = document()->begin(); block.isValid(); block = block.next()) {
+		if (block != document()->begin()) {
+			text += QLatin1Char('\n');
+		}
+		for (QTextBlock::iterator it = block.begin(); !it.atEnd(); ++it) {
+			const QTextFragment fragment = it.fragment();
+			if (!fragment.isValid()) {
+				continue;
+			}
+			const QTextCharFormat format = fragment.charFormat();
+			if (format.isImageFormat()) {
+				// Only images pasted as data, never remote images that came in with pasted rich text
+				const QString name = format.toImageFormat().name();
+				if (name.startsWith(QLatin1String("data:"))) {
+					// The same image pasted twice in a row is one fragment of two characters
+					for (int i = 0; i < fragment.length(); ++i) {
+						// Each image on its own line, so text is not bottom-aligned next to it in the log
+						if (!text.isEmpty() && !text.endsWith(QLatin1Char('\n'))) {
+							text += QLatin1Char('\n');
+						}
+						text += QChar::ObjectReplacementCharacter;
+						images << QString::fromLatin1("<img src=\"%1\" />").arg(name.toHtmlEscaped());
+					}
+				}
+			} else {
+				const QString part = fragment.text().remove(QChar::ObjectReplacementCharacter);
+				if (text.endsWith(QChar::ObjectReplacementCharacter) && !part.isEmpty()
+					&& !part.startsWith(QChar::LineSeparator)) {
+					text += QLatin1Char('\n');
+				}
+				text += part;
+			}
+		}
+	}
+	return text.replace(QChar::LineSeparator, QLatin1Char('\n')).replace(QChar::Nbsp, QLatin1Char(' '));
 }
 
 bool ChatbarTextEdit::event(QEvent *evt) {
@@ -366,7 +504,8 @@ unsigned int ChatbarTextEdit::completeAtCursor() {
 
 void ChatbarTextEdit::addToHistory(const QString &str) {
 	iHistoryIndex = -1;
-	qslHistory.push_front(str);
+	// Pasted images show up as U+FFFC in the plain text; history keeps text only
+	qslHistory.push_front(QString(str).remove(QChar::ObjectReplacementCharacter));
 	if (qslHistory.length() > MAX_HISTORY) {
 		qslHistory.pop_back();
 	}

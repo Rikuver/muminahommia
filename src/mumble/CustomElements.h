@@ -11,6 +11,13 @@
 #include <QtWidgets/QTextBrowser>
 #include <QtWidgets/QTextEdit>
 
+class QTextDocument;
+
+/// Room left beside images fitted to a text widget's viewport (document margin, frame padding)
+constexpr int IMAGE_WIDTH_SLACK = 20;
+/// Scales images in doc down to fit maxWidth x maxHeight (0 = no height limit), never up, keeping the aspect ratio
+void fitImagesToWidth(QTextDocument *doc, int maxWidth, int maxHeight = 0);
+
 class LogTextBrowser : public QTextBrowser {
 private:
 	Q_OBJECT
@@ -22,6 +29,14 @@ public:
 	int getLogScroll();
 	void setLogScroll(int scroll_pos);
 	bool isScrolledToBottom();
+	/// Fits the log's images to its width, once the current changes are done
+	void scheduleFitImages();
+
+protected:
+	void resizeEvent(QResizeEvent *e) Q_DECL_OVERRIDE;
+
+private:
+	bool m_fitPending = false;
 };
 
 class ChatbarTextEdit : public QTextEdit {
@@ -51,19 +66,21 @@ protected:
 	void resizeEvent(QResizeEvent *e) Q_DECL_OVERRIDE;
 	bool canInsertFromMimeData(const QMimeData *source) const Q_DECL_OVERRIDE;
 	void insertFromMimeData(const QMimeData *source) Q_DECL_OVERRIDE;
-	bool sendImagesFromMimeData(const QMimeData *source);
-	bool emitPastedImage(QImage image);
+	bool insertImagesFromMimeData(const QMimeData *source);
+	bool insertPastedImage(QImage image);
+	void fitImagesToBar();
 
 public:
 	void setDefaultText(const QString &, bool = false);
 	unsigned int completeAtCursor();
+	/// Plain text with one U+FFFC per pasted image, the images' <img> html in the same order
+	QString textWithImages(QStringList &images) const;
 signals:
 	void tabPressed(void);
 	void backtabPressed(void);
 	void ctrlSpacePressed(void);
 	void entered(QString);
 	void ctrlEnterPressed(QString);
-	void pastedImage(QString);
 public slots:
 	void pasteAndSend_triggered();
 	void doResize();

@@ -175,7 +175,6 @@ MainWindow::MainWindow(QWidget *p)
 	connect(qmListener, SIGNAL(aboutToShow()), this, SLOT(qmListener_aboutToShow()));
 	connect(qteChat, SIGNAL(entered(QString)), this, SLOT(sendChatbarText(QString)));
 	connect(qteChat, &ChatbarTextEdit::ctrlEnterPressed, [this](const QString &msg) { sendChatbarText(msg, true); });
-	connect(qteChat, SIGNAL(pastedImage(QString)), this, SLOT(sendChatbarMessage(QString)));
 
 	// Tray
 	connect(qstiIcon, SIGNAL(messageClicked()), this, SLOT(showRaiseWindow()));
@@ -696,6 +695,8 @@ void MainWindow::setupPingDisplay() {
 	QHBoxLayout *layout = new QHBoxLayout(chatRow);
 	layout->setContentsMargins(0, 0, 0, 0);
 	layout->setSpacing(6);
+	// Follow the chat bar's maximum height, so the dock shrinks back after a tall message is sent or deleted
+	layout->setSizeConstraint(QLayout::SetMinAndMaxSize);
 
 	qlPing = new QLabel(chatRow);
 	qlPing->setObjectName(QLatin1String("qlPing"));
@@ -2368,6 +2369,11 @@ void MainWindow::sendChatbarText(QString qsText, bool plainText) {
 		return;
 	}
 
+	// Customisation: images pasted into the chat bar go out with the text, each where it was placed
+	// qsText is always the chat bar content, so reading the bar here is the same message
+	QStringList images;
+	qsText = qteChat->textWithImages(images);
+
 	if (Global::get().s.bChatSendAsTyped) {
 		// Customisation: no Markdown, the message is sent as typed (Enter and Ctrl+Enter alike)
 		qsText = Log::plainTextToHtml(qsText);
@@ -2385,6 +2391,20 @@ void MainWindow::sendChatbarText(QString qsText, bool plainText) {
 		// function, this job has to be done explicitly as otherwise line breaks won't be shown on
 		// the receiving end of this text message.
 		qsText = Markdown::markdownToHTML(qsText);
+	}
+
+	for (const QString &img : images) {
+		const int at = qsText.indexOf(QChar::ObjectReplacementCharacter);
+		if (at < 0) {
+			break;
+		}
+		qsText.replace(at, 1, img);
+	}
+	// The server checks the whole message against the image limit; keep the bar content if it is over
+	if (!images.isEmpty() && Global::get().uiImageLength
+		&& static_cast< unsigned int >(qsText.length()) > Global::get().uiImageLength) {
+		Global::get().l->log(Log::Information, tr("Unable to send message: the images are too large together."));
+		return;
 	}
 
 	sendChatbarMessage(qsText);
@@ -2433,13 +2453,11 @@ void MainWindow::on_qteChat_ctrlSpacePressed() {
 void MainWindow::on_qteChat_tabPressed() {
 	// Only autocomplete the username, if the user entered text starts with a "@".
 	// Otherwise TAB should be reserved for accessible keyboard navigation.
-	QString currentText = qteChat->toPlainText();
-	if (currentText.startsWith("@")) {
-		currentText.remove(0, 1);
-
-		qteChat->clear();
-		QTextCursor tc = qteChat->textCursor();
-		tc.insertText(currentText);
+	if (qteChat->toPlainText().startsWith("@")) {
+		// Delete only the "@", so pasted images in the chat bar stay
+		QTextCursor tc(qteChat->document());
+		tc.deleteChar();
+		tc.movePosition(QTextCursor::End);
 		qteChat->setTextCursor(tc);
 
 		autocompleteUsername();
@@ -4054,6 +4072,8 @@ void MainWindow::updateChatBar() {
 
 void MainWindow::setupLogBrowser(LogTextBrowser *log) {
 	log->setDocument(new LogDocument(log));
+	// Customisation: large images shrink to the log's width
+	connect(log->document(), &QTextDocument::contentsChanged, log, &LogTextBrowser::scheduleFitImages);
 	log->document()->setMaximumBlockCount(Global::get().s.iMaxLogBlocks);
 	log->document()->setDefaultStyleSheet(qApp->styleSheet());
 }
