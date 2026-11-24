@@ -1,6 +1,6 @@
 # Handoff: port Harri's tab design (origin/harri-build) onto main
 
-## Current state (2026-11-24): ported on branch `port-harri-tabs`, not merged, not pushed
+## Current state (2026-11-24): merged into `main` (fast-forward), not pushed
 
 Owner said "port it" and asked for a setting for the message changes. Commits on `port-harri-tabs` (after `caf93df69`):
 
@@ -17,8 +17,8 @@ Owner said "port it" and asked for a setting for the message changes. Commits on
 Kept from main: session-keyed private tabs (`privateSession` param), `(offline)` label, ChatHistory (own PMs excluded), `updateLogSettings()`.
 Not taken: Harri's close notice, `README_PACKAGE.txt`, his `build_windows*.bat` changes, his `dist/` packaging (parked).
 
-Verified so far: each step's changed `.cpp` files compile (object only; Mumble from `build\` was running, so no link).
-Next step: full build + link with skill `build-mumble-windows` once Mumble is closed, test in the app, then merge into `main` and push to `origin` when the owner says so.
+Verified: full build + link OK, `change-reviewer` verdict "commit" (nits fixed in `ab8f8e4d4`), owner tested the build and said merge.
+Next step: push `main` to `origin` when the owner says so. Not done: unit test for `Log::plainTextToHtml`/`stripFormatting`, `.ts` translations. Parked: harri's `dist/` packaging.
 
 ## Update 2026-11-24: 3 new commits, and cherry-pick is possible after all
 
