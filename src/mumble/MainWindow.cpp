@@ -76,6 +76,7 @@
 #include <QtGui/QScreen>
 #include <QtWidgets/QDesktopWidget>
 #include <QtWidgets/QFileDialog>
+#include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMessageBox>
@@ -448,6 +449,7 @@ void MainWindow::setupGui() {
 #endif
 
 	setupLogBrowser(qteLog);
+	setupPingDisplay();
 
 	// Chat tabs: [server/System] [Chat] [private conversations...]. The tab bar is always visible.
 	qtwLogTabs = new QTabWidget(qdwLog);
@@ -685,6 +687,68 @@ void MainWindow::updateOutputVolumeLabel(int percent) {
 	const QString tip = tr("Output volume: %1 %").arg(percent);
 	qsOutputVolume->setToolTip(tip);
 	qlOutputVolume->setToolTip(tip);
+}
+
+void MainWindow::setupPingDisplay() {
+	// Chat bar and a small ping label side by side in the chat bar dock
+	QWidget *chatRow = new QWidget(qdwChat);
+	chatRow->setObjectName(QLatin1String("qwChatRow"));
+	QHBoxLayout *layout = new QHBoxLayout(chatRow);
+	layout->setContentsMargins(0, 0, 0, 0);
+	layout->setSpacing(6);
+
+	qlPing = new QLabel(chatRow);
+	qlPing->setObjectName(QLatin1String("qlPing"));
+	qlPing->setAlignment(Qt::AlignCenter);
+	qlPing->setMinimumWidth(qlPing->fontMetrics().boundingRect(tr("Ping: %1 ms").arg(999)).width() + 8);
+	qlPing->setAccessibleName(tr("Ping to server"));
+
+	layout->addWidget(qteChat, 1);
+	layout->addWidget(qlPing, 0, Qt::AlignVCenter);
+	qdwChat->setWidget(chatRow);
+
+	// No timer: updated when Mumble's own ping reply arrives (ServerHandler::pingUpdated) and on (dis)connect
+	updatePingDisplay();
+}
+
+void MainWindow::updatePingDisplay() {
+	if (!qlPing) {
+		return;
+	}
+
+	ServerHandlerPtr sh = Global::get().sh;
+	const bool connected = sh && Global::get().uiSession != 0;
+	double udp           = -1.0;
+	double tcp           = -1.0;
+	bool udpActive       = false;
+	if (connected) {
+		udp       = sh->m_lastUDPPing;
+		tcp       = sh->m_lastTCPPing;
+		udpActive = sh->isUsingUdp() && !NetworkConfig::TcpModeEnabled();
+	}
+
+	// Voice goes over UDP normally; if UDP isn't working Mumble falls back to TCP
+	const double ping = (udpActive && udp >= 0.0) ? udp : tcp;
+
+	QString colour;
+	if (ping < 0.0) {
+		qlPing->setText(tr("Ping: -"));
+	} else {
+		const int ms = static_cast< int >(ping + 0.5);
+		qlPing->setText(tr("Ping: %1 ms").arg(ms));
+		// shortcut: fixed colours, readable on light and dark themes; the number is always shown too
+		colour = ms < 80 ? QLatin1String("#3fa34d") : (ms < 150 ? QLatin1String("#d08a1c") : QLatin1String("#d0453a"));
+	}
+	qlPing->setStyleSheet(colour.isEmpty() ? QString() : QString::fromLatin1("QLabel { color: %1; }").arg(colour));
+
+	const auto fmt = [](double v) { return v < 0.0 ? tr("n/a") : tr("%1 ms").arg(v, 0, 'f', 1); };
+	if (!connected) {
+		qlPing->setToolTip(tr("Your ping to the server (not connected)"));
+	} else {
+		qlPing->setToolTip(tr("Your ping to the server\nVoice connection: %1\nUDP: %2\nTCP: %3\n(measured every %4 s)")
+							   .arg(udpActive ? tr("UDP") : tr("TCP (UDP not working)"), fmt(udp), fmt(tcp))
+							   .arg(Global::get().s.iPingIntervalMsec / 1000));
+	}
 }
 
 void MainWindow::updateToolbar() {
@@ -1302,6 +1366,9 @@ static void recreateServerHandler() {
 	sh->moveToThread(sh.get());
 	Global::get().sh = sh;
 	Global::get().mw->connect(sh.get(), SIGNAL(connected()), Global::get().mw, SLOT(serverConnected()));
+	// Ping label next to the chat bar: refresh whenever Mumble's regular ping reply comes in
+	QObject::connect(sh.get(), &ServerHandler::pingUpdated, Global::get().mw, &MainWindow::updatePingDisplay,
+					 Qt::QueuedConnection);
 	Global::get().mw->connect(sh.get(), SIGNAL(disconnected(QAbstractSocket::SocketError, QString)), Global::get().mw,
 							  SLOT(serverDisconnected(QAbstractSocket::SocketError, QString)));
 	Global::get().mw->connect(sh.get(), SIGNAL(error(QAbstractSocket::SocketError, QString)), Global::get().mw,
@@ -3589,6 +3656,7 @@ void MainWindow::serverConnected() {
 	Global::get().uiSession    = 0;
 	Global::get().pPermissions = ChanACL::None;
 	refreshLogTabText(qteSystemLog); // named after the new server
+	updatePingDisplay();
 
 #ifdef Q_OS_MAC
 	// Suppress AppNap while we're connected to a server.
@@ -3645,6 +3713,7 @@ void MainWindow::serverDisconnected(QAbstractSocket::SocketError err, QString re
 	Global::get().uiSession        = 0;
 	Global::get().pPermissions     = ChanACL::None;
 	Global::get().bAttenuateOthers = false;
+	updatePingDisplay();
 	qaServerDisconnect->setEnabled(false);
 	qaServerInformation->setEnabled(false);
 	qaServerBanList->setEnabled(false);

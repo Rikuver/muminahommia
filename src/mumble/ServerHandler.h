@@ -8,6 +8,8 @@
 
 #include <QtCore/QtGlobal>
 
+#include <atomic>
+
 #ifdef Q_OS_WIN
 #	include "win.h"
 #endif
@@ -97,6 +99,13 @@ protected:
 public:
 	Timer tTimestamp;
 	int iInFlightTCPPings;
+
+	/// Most recent measured round-trip times in milliseconds (-1 = nothing measured yet).
+	/// Written by the network thread, read by the ping display next to the chat bar.
+	std::atomic< double > m_lastUDPPing{ -1.0 };
+	std::atomic< double > m_lastTCPPing{ -1.0 };
+	/// Whether voice currently goes over UDP (false = everything goes over TCP)
+	bool isUsingUdp() const { return bUdp; }
 	QTimer *tConnectionTimeoutTimer;
 	QList< QSslError > qlErrors;
 	QList< QSslCertificate > qscCert;
@@ -194,6 +203,8 @@ signals:
 	void disconnected(QAbstractSocket::SocketError, QString reason);
 	void connected();
 	void pingRequested();
+	/// A ping reply (UDP or TCP) arrived; m_lastUDPPing / m_lastTCPPing were just updated
+	void pingUpdated();
 protected slots:
 	void message(Mumble::Protocol::TCPMessageType type, const QByteArray &);
 	void serverConnectionConnected();

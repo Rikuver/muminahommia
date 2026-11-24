@@ -259,7 +259,10 @@ void ServerHandler::udpReady() {
 				case Mumble::Protocol::UDPMessageType::Ping: {
 					const Mumble::Protocol::PingData pingData = m_udpDecoder.getPingData();
 
-					accUDP(static_cast< double >(tTimestamp.elapsed() - pingData.timestamp) / 1000.0);
+					const double udpPing = static_cast< double >(tTimestamp.elapsed() - pingData.timestamp) / 1000.0;
+					accUDP(udpPing);
+					m_lastUDPPing = udpPing;
+					emit pingUpdated();
 
 					break;
 				}
@@ -463,6 +466,8 @@ void ServerHandler::run() {
 		Global::get().mw->rtLast = MumbleProto::Reject_RejectType_None;
 
 		accUDP = accTCP = accClean;
+		m_lastUDPPing   = -1.0;
+		m_lastTCPPing   = -1.0;
 
 		m_version   = Version::UNKNOWN;
 		qsRelease   = QString();
@@ -654,7 +659,10 @@ void ServerHandler::message(Mumble::Protocol::TCPMessageType type, const QByteAr
 			connection->csCrypt->uiRemoteLate   = msg.late();
 			connection->csCrypt->uiRemoteLost   = msg.lost();
 			connection->csCrypt->uiRemoteResync = msg.resync();
-			accTCP(static_cast< double >(tTimestamp.elapsed() - msg.timestamp()) / 1000.0);
+			const double tcpPing = static_cast< double >(tTimestamp.elapsed() - msg.timestamp()) / 1000.0;
+			accTCP(tcpPing);
+			m_lastTCPPing = tcpPing;
+			emit pingUpdated();
 
 			if (((connection->csCrypt->uiRemoteGood == 0) || (connection->csCrypt->uiGood == 0)) && bUdp
 				&& (tTimestamp.elapsed() > 20000000ULL)) {

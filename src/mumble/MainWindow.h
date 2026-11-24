@@ -171,6 +171,8 @@ public:
 	void updateLogSettings();
 	/// Detaches the private chat tab from a session that is gone (user left or we disconnected)
 	void endPrivateChat(unsigned int session);
+	/// Refreshes the ping label next to the chat bar (called when a ping reply arrives)
+	void updatePingDisplay();
 
 #ifdef Q_OS_WIN
 	bool nativeEvent(const QByteArray &eventType, void *message, long *result) Q_DECL_OVERRIDE;
@@ -223,6 +225,10 @@ protected:
 	void setupOutputVolumeSlider();
 	void updateOutputVolumeSlider();
 	void updateOutputVolumeLabel(int percent);
+
+	// Ping label to the right of the chat bar
+	QLabel *qlPing = nullptr;
+	void setupPingDisplay();
 
 	Search::SearchDialog *m_searchDialog = nullptr;
 
