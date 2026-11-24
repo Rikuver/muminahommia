@@ -1011,11 +1011,13 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 	const QString &plainName = pSrc ? pSrc->qsName : tr("Server", "message from");
 	const QString &name      = pSrc ? Log::formatClientUser(pSrc, Log::Source) : tr("Server", "message from");
 	bool privateMessage      = false;
+	bool channelMessage      = false;
 
 	if (msg.tree_id_size() > 0) {
 		target += tr("Tree");
 	} else if (msg.channel_id_size() > 0) {
 		target += tr("Channel");
+		channelMessage = true;
 	} else if (msg.session_size() > 0) {
 		target += tr("Private");
 		privateMessage = true;
@@ -1034,7 +1036,9 @@ void MainWindow::msgTextMessage(const MumbleProto::TextMessage &msg) {
 		return tr("%1: %2").arg(prefixTTS).arg(plainMessage);
 	}();
 
-	const QString prefixMessage = target.isEmpty() ? name : tr("(%1) %2").arg(target).arg(name);
+	// Channel and private messages read "Nickname: message"; only tree messages keep their "(Tree)" prefix
+	const QString prefixMessage =
+		(target.isEmpty() || channelMessage || privateMessage) ? name : tr("(%1) %2").arg(target).arg(name);
 
 	Global::get().l->log(privateMessage ? Log::PrivateTextMessage : Log::TextMessage,
 						 tr("%1: %2").arg(prefixMessage).arg(u8(msg.message())), tr("Message from %1").arg(plainName),

@@ -2169,6 +2169,12 @@ void MainWindow::on_qaUserTextMessage_triggered() {
 	openTextMessageDialog(p);
 }
 
+/// Own name formatted like other users' names, so own messages read "Nickname: message" instead of "To X: message"
+static QString ownChatName() {
+	ClientUser *self = ClientUser::get(Global::get().uiSession);
+	return self ? Log::formatClientUser(self, Log::Source) : MainWindow::tr("Me");
+}
+
 void MainWindow::openTextMessageDialog(ClientUser *p) {
 	unsigned int session = p->uiSession;
 
@@ -2185,7 +2191,7 @@ void MainWindow::openTextMessageDialog(ClientUser *p) {
 		if (!msg.isEmpty()) {
 			Global::get().sh->sendUserTextMessage(p->uiSession, msg);
 			Global::get().l->log(Log::TextMessage,
-								 tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), texm->message()),
+								 tr("%1: %2").arg(ownChatName(), texm->message()),
 								 tr("Message to %1").arg(p->qsName), true, QString(), false, p->uiSession);
 			qtwLogTabs->setCurrentWidget(privateLog(p->uiSession));
 		}
@@ -2327,7 +2333,7 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 			c = ClientUser::get(Global::get().uiSession)->cChannel;
 
 		Global::get().sh->sendChannelTextMessage(c->iId, qsMessage, false);
-		Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), qsMessage),
+		Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), qsMessage),
 							 tr("Message to channel %1").arg(c->qsName), true);
 		return;
 	}
@@ -2337,7 +2343,7 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 	if (!p)
 		return; // User is offline
 	Global::get().sh->sendUserTextMessage(p->uiSession, qsMessage);
-	Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), qsMessage),
+	Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), qsMessage),
 						 tr("Message to %1").arg(p->qsName), true, QString(), false, p->uiSession);
 	qtwLogTabs->setCurrentWidget(privateLog(p->uiSession));
 }
@@ -2675,7 +2681,7 @@ void MainWindow::on_qaChannelSendMessage_triggered() {
 			Global::get().l->log(Log::TextMessage, tr("To %1 (Tree): %2").arg(Log::formatChannel(c), texm->message()),
 								 tr("Message to tree %1").arg(c->qsName), true);
 		else
-			Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), texm->message()),
+			Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), texm->message()),
 								 tr("Message to channel %1").arg(c->qsName), true);
 	}
 	delete texm;
@@ -3359,7 +3365,7 @@ void MainWindow::on_gsSendTextMessage_triggered(bool down, QVariant scdata) {
 
 	Channel *c = ClientUser::get(Global::get().uiSession)->cChannel;
 	Global::get().sh->sendChannelTextMessage(c->iId, qsText, false);
-	Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatChannel(c), qsText),
+	Global::get().l->log(Log::TextMessage, tr("%1: %2").arg(ownChatName(), qsText),
 						 tr("Message to channel %1").arg(c->qsName), true);
 }
 
