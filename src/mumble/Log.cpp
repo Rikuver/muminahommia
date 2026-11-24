@@ -785,7 +785,12 @@ QString Log::stripFormatting(const QString &html) {
 			const QTextCharFormat format = fragment.charFormat();
 			if (format.isImageFormat()) {
 				flushText();
-				out += QString::fromLatin1("<img src=\"%1\" />").arg(format.toImageFormat().name().toHtmlEscaped());
+				const QString img =
+					QString::fromLatin1("<img src=\"%1\" />").arg(format.toImageFormat().name().toHtmlEscaped());
+				// A linked image keeps its link
+				out += format.isAnchor() && !format.anchorHref().isEmpty()
+						   ? QString::fromLatin1("<a href=\"%1\">%2</a>").arg(format.anchorHref().toHtmlEscaped(), img)
+						   : img;
 			} else if (format.isAnchor() && !format.anchorHref().isEmpty()) {
 				flushText();
 				out += QString::fromLatin1("<a href=\"%1\">%2</a>")

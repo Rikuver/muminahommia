@@ -701,7 +701,8 @@ void MainWindow::setupPingDisplay() {
 	qlPing->setObjectName(QLatin1String("qlPing"));
 	qlPing->setAlignment(Qt::AlignCenter);
 	qlPing->setMinimumWidth(qlPing->fontMetrics().boundingRect(tr("Ping: %1 ms").arg(999)).width() + 8);
-	qlPing->setAccessibleName(tr("Ping to server"));
+	// No accessible name: screen readers then read the label text itself, number included
+	qlPing->setAccessibleDescription(tr("Ping to server"));
 
 	layout->addWidget(qteChat, 1);
 	layout->addWidget(qlPing, 0, Qt::AlignVCenter);
@@ -4141,7 +4142,9 @@ void MainWindow::refreshLogTabText(LogTextBrowser *log) {
 		text    = host.isEmpty() ? tr("System") : host;
 		toolTip = tr("Server and system messages (joins, leaves, connection info, ...)");
 	} else {
-		toolTip = tr("Private messages with %1").arg(text.toHtmlEscaped());
+		// <qt> forces rich text, so the escaped name shows as typed (e.g. "A&B", "<b>x")
+		toolTip = QLatin1String("<qt>") + tr("Private messages with %1").arg(text.toHtmlEscaped())
+				  + QLatin1String("</qt>");
 		if (log->property("session").toUInt() == 0)
 			text = tr("%1 (offline)").arg(text);
 	}

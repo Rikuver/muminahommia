@@ -148,7 +148,7 @@
       <item>
        <widget class="QCheckBox" name="qcbChatStripReceivedFormatting">
         <property name="toolTip">
-         <string>Removes bold, italics, headings, colours and fonts from messages you receive. Line breaks, links and images are kept. Applies to new messages, saved chat included.</string>
+         <string>Removes bold, italics, headings, colours and fonts from messages you receive. Line breaks, links and images are kept. Applies to messages received from now on (also in the saved chat); older saved messages stay as they were.</string>
         </property>
         <property name="text">
          <string>Show received messages without formatting</string>
