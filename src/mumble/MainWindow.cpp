@@ -454,6 +454,7 @@ void MainWindow::setupGui() {
 	qtwLogTabs->setObjectName(QLatin1String("qtwLogTabs"));
 	qtwLogTabs->setDocumentMode(true);
 	qtwLogTabs->setTabsClosable(true);
+	qtwLogTabs->setMovable(true);
 	qteSystemLog = createLogTab(tr("Server and system messages"));
 	qteSystemLog->setObjectName(QLatin1String("qteSystemLog"));
 	qteLog->setProperty("chatName", tr("Chat"));
@@ -485,6 +486,11 @@ void MainWindow::setupGui() {
 			qhPrivateLogs.remove(session);
 		qtwLogTabs->removeTab(index);
 		log->deleteLater();
+	});
+	// Middle-click (scroll wheel click) closes a private tab. Closing is local only, the other user isn't told.
+	connect(qtwLogTabs, &QTabWidget::tabBarClicked, this, [this](int index) {
+		if (index >= 0 && (QGuiApplication::mouseButtons() & Qt::MiddleButton))
+			emit qtwLogTabs->tabCloseRequested(index);
 	});
 
 	pmModel = new UserModel(qtvUsers);
@@ -2313,16 +2319,10 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 	if (Global::get().uiSession == 0)
 		return; // Check if text & connection is available
 
-	ClientUser *p = pmModel->getUser(qtvUsers->currentIndex());
-	Channel *c    = pmModel->getChannel(qtvUsers->currentIndex());
-
-	if (LogTextBrowser *privateTab = currentPrivateLog()) {
-		// Private chat tab: always send to the user of this tab
-		p = ClientUser::get(privateTab->property("session").toUInt());
-		if (!p)
-			return; // User is offline
-	} else if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
-		// Channel message
+	LogTextBrowser *privateTab = currentPrivateLog();
+	if (!privateTab) {
+		// Channel message. A user selected in the tree means that user's channel, never a private message.
+		Channel *c = pmModel->getChannel(qtvUsers->currentIndex());
 		if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
 			c = ClientUser::get(Global::get().uiSession)->cChannel;
 
@@ -2332,7 +2332,10 @@ void MainWindow::sendChatbarMessage(QString qsMessage) {
 		return;
 	}
 
-	// User message (private tab or user selected in the tree), shown in the private chat tab with that user
+	// Private chat tab: always send to the user of this tab
+	ClientUser *p = ClientUser::get(privateTab->property("session").toUInt());
+	if (!p)
+		return; // User is offline
 	Global::get().sh->sendUserTextMessage(p->uiSession, qsMessage);
 	Global::get().l->log(Log::TextMessage, tr("To %1: %2").arg(Log::formatClientUser(p, Log::Target), qsMessage),
 						 tr("Message to %1").arg(p->qsName), true, QString(), false, p->uiSession);
@@ -3944,7 +3947,6 @@ void MainWindow::qtvUserCurrentChanged(const QModelIndex &, const QModelIndex &)
 }
 
 void MainWindow::updateChatBar() {
-	User *p    = pmModel->getUser(qtvUsers->currentIndex());
 	Channel *c = pmModel->getChannel(qtvUsers->currentIndex());
 
 	LogTextBrowser *privateTab = currentPrivateLog();
@@ -3959,16 +3961,13 @@ void MainWindow::updateChatBar() {
 		} else {
 			qteChat->setDefaultText(tr("<center>'%1' is offline, messages can't be sent</center>").arg(name), true);
 		}
-	} else if (!Global::get().s.bChatBarUseSelection || !p || p->uiSession == Global::get().uiSession) {
-		// Channel tree target
+	} else {
+		// Channel tree target (a selected user means that user's channel)
 		if (!Global::get().s.bChatBarUseSelection || !c) // If no channel selected fallback to current one
 			c = ClientUser::get(Global::get().uiSession)->cChannel;
 
 		qteChat->setDefaultText(
 			tr("<center>Type message to channel '%1' here</center>").arg(c->qsName.toHtmlEscaped()));
-	} else {
-		// User target
-		qteChat->setDefaultText(tr("<center>Type message to user '%1' here</center>").arg(p->qsName.toHtmlEscaped()));
 	}
 
 	updateMenuPermissions();
